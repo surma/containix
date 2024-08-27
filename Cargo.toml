@@ -1,0 +1,13 @@
+[package]
+name = "containix"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0.86"
+clap = { version = "4.5.16", features = ["derive"] }
+derive_more = { version = "1.0.0", features = ["full"] }
+scopeguard = "1.2.0"
+tracing = "0.1.40"
+which = "6.0.3"
+xshell = "0.2.6"
