@@ -19,8 +19,8 @@ struct Args {
 
 #[derive(Parser, Debug)]
 enum Command {
-    Host(HostArgs),
-    Container(ContainerArgs),
+    CreateContainer(CreateContainerArgs),
+    InitializeContainer(InitializeContainerArgs),
 }
 
 // #[derive(Debug, Clone)]
@@ -31,7 +31,7 @@ enum Command {
 // }
 
 #[derive(Parser, Debug)]
-struct HostArgs {
+struct CreateContainerArgs {
     #[arg(short, long, value_name = "DIR")]
     root_dir: Option<PathBuf>,
 
@@ -43,14 +43,14 @@ struct HostArgs {
 }
 
 #[derive(Parser, Debug)]
-struct ContainerArgs {
+struct InitializeContainerArgs {
     // Define container-specific flags here
     // For example:
     // #[arg(short, long)]
     // image: String,
 }
 
-fn handle_host(args: HostArgs) -> Result<()> {
+fn create_container(args: CreateContainerArgs) -> Result<()> {
     let [command, extra_args @ ..] = &args.command[..] else {
         anyhow::bail!("No command given");
     };
@@ -59,7 +59,7 @@ fn handle_host(args: HostArgs) -> Result<()> {
     };
     tracing::trace!("Resolved command path: {command:?}");
 
-    let guard = if let Some(root_dir) = &args.root_dir {
+    let _guard = if let Some(root_dir) = &args.root_dir {
         let closure = nix::get_nix_closure(&command)?;
         tracing::trace!("Nix closure: {closure:?}");
         Some(bind_mount_all::<fn(Vec<PathBuf>) -> ()>(root_dir, closure)?)
@@ -89,11 +89,8 @@ fn handle_host(args: HostArgs) -> Result<()> {
         .stdout(std::process::Stdio::inherit())
         .stderr(std::process::Stdio::inherit());
 
-    let status = child_process.status()?;
-
-    if !status.success() {
-        anyhow::bail!("Command failed with exit code: {}", status);
-    }
+    let mut c = child_process.spawn()?;
+    c.wait()?;
 
     // The guard will be dropped here, unmounting the bind mounts
 
@@ -139,7 +136,7 @@ fn bind_mount_all<F: FnOnce(Vec<PathBuf>) -> ()>(
     Ok(guard)
 }
 
-fn handle_container(args: ContainerArgs) -> Result<()> {
+fn initialize_container(args: InitializeContainerArgs) -> Result<()> {
     todo!()
 }
 
@@ -147,7 +144,7 @@ fn main() -> Result<()> {
     let args = Args::parse();
 
     match args.command {
-        Command::Host(host_args) => handle_host(host_args),
-        Command::Container(container_args) => handle_container(container_args),
+        Command::CreateContainer(host_args) => create_container(host_args),
+        Command::InitializeContainer(container_args) => initialize_container(container_args),
     }
 }
