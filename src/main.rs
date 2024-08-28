@@ -1,13 +1,16 @@
 use std::{
     collections::HashSet,
+    ffi::OsString,
     path::{Path, PathBuf},
+    str::FromStr,
 };
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Parser;
-use derive_more::derive::From;
-use scopeguard::ScopeGuard;
+use nix::NixComponent;
+use tracing_subscriber::{fmt, EnvFilter};
 
+mod container;
 mod nix;
 
 #[derive(Parser, Debug)]
@@ -23,117 +26,115 @@ enum Command {
     InitializeContainer(InitializeContainerArgs),
 }
 
-// #[derive(Debug, Clone)]
-// struct NetworkTunnel {
-//     host_address: std::net::IpNet,
-//     container_address: std::net::IpAddr,
+#[derive(Debug, Clone)]
+struct VolumeMount {
+    host_path: PathBuf,
+    container_path: PathBuf,
+}
 
-// }
-
+impl FromStr for VolumeMount {
+    type Err = anyhow::Error;
+    fn from_str(s: &str) -> Result<Self> {
+        let parts: Vec<_> = s.splitn(2, ':').collect();
+        let &[host_path, container_path] = &parts[..] else {
+            anyhow::bail!(
+                "Volume mount must be of the form <HOST PATH>:<CONTAINER PATH>, got: {s}"
+            );
+        };
+        Ok(VolumeMount {
+            host_path: host_path.into(),
+            container_path: container_path.into(),
+        })
+    }
+}
 #[derive(Parser, Debug)]
 struct CreateContainerArgs {
-    #[arg(short, long, value_name = "DIR")]
-    root_dir: Option<PathBuf>,
+    /// Volumes to mount into the container.
+    #[arg(
+        short = 'v',
+        long = "volume",
+        value_name = "<HOST PATH>:<CONTAINER PATH>"
+    )]
+    volumes: Vec<VolumeMount>,
 
-    #[arg(short, long, value_name = "DIR")]
-    network: Option<PathBuf>,
+    /// Additional nix components to bind mount into the container.
+    #[arg(short = 'e', long = "expose", value_name = "<NIX STORE PATH>")]
+    exposed_components: Vec<NixComponent>,
 
+    /// Keep the container root directory after the command has run.
+    #[arg(short = 'k', long = "keep")]
+    keep_container: bool,
+
+    /// The command to run in the container.
     #[arg(trailing_var_arg = true)]
     command: Vec<String>,
 }
 
 #[derive(Parser, Debug)]
-struct InitializeContainerArgs {
-    // Define container-specific flags here
-    // For example:
-    // #[arg(short, long)]
-    // image: String,
+struct InitializeContainerArgs {}
+
+fn combine_closures(exposed_components: &[NixComponent]) -> Result<HashSet<NixComponent>> {
+    let mut closure = HashSet::new();
+    for component in exposed_components {
+        closure.extend(component.closure()?);
+        closure.insert(component.clone());
+    }
+    Ok(closure)
 }
 
 fn create_container(args: CreateContainerArgs) -> Result<()> {
+    tracing::trace!("Creating container");
     let [command, extra_args @ ..] = &args.command[..] else {
         anyhow::bail!("No command given");
     };
-    let Some(command) = nix::find_nix_store_path(command) else {
-        anyhow::bail!("Command not found in nix store");
-    };
-    tracing::trace!("Resolved command path: {command:?}");
 
-    let _guard = if let Some(root_dir) = &args.root_dir {
-        let closure = nix::get_nix_closure(&command)?;
-        tracing::trace!("Nix closure: {closure:?}");
-        Some(bind_mount_all::<fn(Vec<PathBuf>) -> ()>(root_dir, closure)?)
-    } else {
-        None
-    };
+    let mut container = container::Container::temp_container();
+    container.set_keep(args.keep_container);
+    tracing::trace!("Container root: {}", container.root().display());
 
-    // Execute the command in the new root environment using unshare
-    let mut child_process = std::process::Command::new("unshare");
-    // command
-    //     .arg("--mount")
-    //     .arg("--uts")
-    //     .arg("--ipc")
-    //     .arg("--pid")
-    //     .arg("--fork")
-    //     .arg("--mount-proc");
-
-    if let Some(root_dir) = args.root_dir.as_ref() {
-        child_process.arg("--root").arg(root_dir);
+    let closure = combine_closures(&args.exposed_components)?;
+    tracing::trace!("Mounting components");
+    for component in &closure {
+        tracing::trace!("Mounting component: {component:?}");
+        container.bind_mount(component.store_path(), component.store_path(), true)?;
     }
+    tracing::trace!("Mounting volumes");
+    for volume in &args.volumes {
+        tracing::trace!("Mounting volume: {volume:?}");
+        container.bind_mount(&volume.host_path, &volume.container_path, false)?;
+    }
+
+    let mut child_process = std::process::Command::new("/usr/bin/unshare");
+    child_process.arg("-R").arg(container.root()).arg("--mount");
 
     child_process.arg(&command);
     child_process.args(extra_args);
 
+    let path_var = args
+        .exposed_components
+        .iter()
+        .map(|p| p.store_path().join("bin").as_os_str().to_os_string())
+        .collect::<Vec<_>>()
+        .join(OsString::from(":").as_os_str());
+
+    tracing::trace!("Setting $PATH: {path_var:?}");
+    child_process.env_clear().env("PATH", path_var);
+
+    tracing::trace!(
+        "Running command in container: {:?}",
+        child_process.get_args()
+    );
     child_process
         .stdin(std::process::Stdio::inherit())
         .stdout(std::process::Stdio::inherit())
         .stderr(std::process::Stdio::inherit());
 
-    let mut c = child_process.spawn()?;
-    c.wait()?;
-
-    // The guard will be dropped here, unmounting the bind mounts
+    let mut c = child_process
+        .spawn()
+        .context("Spawning command in container")?;
+    c.wait().context("Waiting for container to terminate")?;
 
     Ok(())
-}
-fn bind_guard_cleanup(dirs: Vec<PathBuf>) {
-    for dir in dirs {
-        if let Err(e) = std::process::Command::new("umount").arg(&dir).status() {
-            tracing::error!("Failed to unmount {}: {}", dir.display(), e);
-        }
-    }
-}
-/// Bind mounts all paths in the nix closure to the root directory.
-///
-/// This function creates a directory structure in the root directory that mirrors the
-/// nix store, binds the paths to the store, and returns a guard that will unmount the paths
-/// when dropped.
-fn bind_mount_all<F: FnOnce(Vec<PathBuf>) -> ()>(
-    root_dir: impl AsRef<Path>,
-    closure: Vec<PathBuf>,
-) -> Result<ScopeGuard<Vec<PathBuf>, impl FnOnce(Vec<PathBuf>) -> ()>> {
-    let nix_store_dir = root_dir.as_ref().join("nix").join("store");
-    std::fs::create_dir_all(&nix_store_dir)?;
-
-    let mut guard = scopeguard::guard(Vec::<PathBuf>::new(), bind_guard_cleanup);
-
-    for path in closure {
-        let target_dir = nix_store_dir.join(path.file_name().unwrap());
-        std::fs::create_dir_all(&target_dir)?;
-
-        let status = std::process::Command::new("mount")
-            .args(&["-o", "bind,ro"])
-            .arg(&path)
-            .arg(&target_dir)
-            .status()?;
-
-        if !status.success() {
-            anyhow::bail!("Failed to bind mount {}", path.display());
-        }
-
-        guard.push(target_dir);
-    }
-    Ok(guard)
 }
 
 fn initialize_container(args: InitializeContainerArgs) -> Result<()> {
@@ -141,6 +142,12 @@ fn initialize_container(args: InitializeContainerArgs) -> Result<()> {
 }
 
 fn main() -> Result<()> {
+    fmt()
+        .with_env_filter(EnvFilter::from_default_env())
+        .with_target(false)
+        .with_writer(std::io::stderr)
+        .init();
+    tracing::trace!("Starting containix");
     let args = Args::parse();
 
     match args.command {
