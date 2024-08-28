@@ -1,27 +1,24 @@
 {
   pkgs ? import <nixpkgs> { },
+  fenix ? pkgs.callPackage (import (
+    fetchTarball "https://github.com/nix-community/fenix/archive/main.tar.gz"
+  )) { },
+  system ? builtins.currentSystem,
 }:
 let
-  inherit (pkgs) rustPlatform;
+  buildRustPackage = pkgs.callPackage ./build-rust-package.nix { inherit fenix; };
+
   toml = builtins.fromTOML (builtins.readFile ./Cargo.toml);
+  muslTarget = pkgs.lib.strings.replaceStrings [ "-gnu" ] [
+    "-musl"
+  ] pkgs.stdenv.hostPlatform.rust.rustcTargetSpec;
 in
-rustPlatform.buildRustPackage {
+buildRustPackage {
   pname = toml.package.name;
   version = toml.package.version;
-  # src = pkgs.symlinkJoin [./src ./Cargo.toml ./Cargo.lock];
   src = ./.;
   cargoLock = {
     lockFile = ./Cargo.lock;
   };
-
-  nativeBuildInputs = with pkgs; [ pkg-config ];
-
-  buildInputs = with pkgs; [
-    # Add any system dependencies here
-  ];
-
-  # If you have any post-installation steps, add them here
-  # postInstall = ''
-  #   # Your post-install commands
-  # '';
+  target = muslTarget;
 }

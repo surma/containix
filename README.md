@@ -8,7 +8,7 @@ Containix is a lightweight approach to containers by relying on Nix and the Nix 
 - Automatic cleanup of ephemeral container resources
 - Mount volumes into containers
 - (TODO) Easy network interface configuration
-- (TODO) Port mapping 
+- (TODO) Port mapping
 
 ## Installation
 
@@ -20,13 +20,13 @@ Containix is a lightweight approach to containers by relying on Nix and the Nix 
 
 2. Build the project:
    ```console
-   $ cargo build --release
+   $ nix build .
    ```
 
-   Or
+   If you don’t have Nix installed, you can use bog-standard cargo, but make sure to target your architecture wuth the muslibc to ensure a statically linked binary:
 
    ```console
-   $ nix-build
+   $ cargo build --target x86_64-unknown-linux-musl --release
    ```
 
 ## Usage
