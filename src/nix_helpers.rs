@@ -8,24 +8,67 @@ use std::{
     str::FromStr,
 };
 
-#[derive(Debug, Clone, Hash, Eq, PartialEq, Into, Deref)]
-pub struct NixComponent(String);
+#[derive(Debug, Clone, PartialEq, Eq, Hash, enum_as_inner::EnumAsInner)]
+pub enum NixComponent {
+    Store(String),
+    Nixpkgs(String),
+}
+
+pub fn realise_nixpkgs(component_name: impl AsRef<str>) -> Result<PathBuf> {
+    let component_name = component_name.as_ref();
+    tracing::trace!("Realising Nixpkgs component {component_name}");
+
+    let output = Command::new("nix-build")
+        .arg("<nixpkgs>")
+        .arg("-A")
+        .arg(component_name)
+        .arg("-Q")
+        .arg("--no-out-link")
+        .output()
+        .context("Running nix-build")?;
+
+    if !output.status.success() {
+        anyhow::bail!(
+            "Failed to realise Nixpkgs component: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    let path = PathBuf::from(String::from_utf8(output.stdout)?.trim());
+    Ok(path)
+}
 
 impl NixComponent {
-    pub fn store_path(&self) -> PathBuf {
-        let mut path = PathBuf::new();
-        path.push("/");
-        path.push("nix");
-        path.push("store");
-        path.push(&self.0);
-        path
+    pub fn realise(self) -> Result<Self> {
+        match self {
+            NixComponent::Nixpkgs(component) => {
+                Ok(NixComponent::from_path(realise_nixpkgs(component)?)?)
+            }
+            path => Ok(path),
+        }
+    }
+
+    pub fn store_path(&self) -> Result<PathBuf> {
+        match self {
+            NixComponent::Store(component) => {
+                let mut path = PathBuf::new();
+                path.push("/");
+                path.push("nix");
+                path.push("store");
+                path.push(component);
+                Ok(path)
+            }
+            NixComponent::Nixpkgs(component) => {
+                anyhow::bail!("Can’t provide path for an unbuilt Nixpkgs component")
+            }
+        }
     }
 
     pub fn closure(&self) -> Result<HashSet<NixComponent>> {
         tracing::trace!("Getting closure for {self:?}");
         let output = Command::new("nix-store")
             .args(&["--query", "--requisites"])
-            .arg(self.store_path())
+            .arg(self.store_path()?)
             .output()
             .context("Running nix-store query for closure")?;
 
@@ -57,7 +100,7 @@ impl NixComponent {
             }
             _ => anyhow::bail!("Path {} is not in the nix store", path.display()),
         };
-        Ok(NixComponent(
+        Ok(NixComponent::Store(
             component
                 .to_str()
                 .ok_or_else(|| anyhow::anyhow!("Nix component contains non-utf8 characters"))?
@@ -70,6 +113,10 @@ impl FromStr for NixComponent {
     type Err = anyhow::Error;
 
     fn from_str(s: &str) -> Result<Self> {
-        NixComponent::from_path(s)
+        if s.starts_with("/") {
+            NixComponent::from_path(s)
+        } else {
+            Ok(NixComponent::Nixpkgs(s.to_string()))
+        }
     }
 }

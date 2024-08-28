@@ -75,7 +75,9 @@ struct CreateContainerArgs {
 #[derive(Parser, Debug)]
 struct InitializeContainerArgs {}
 
-fn combine_closures(exposed_components: &[NixComponent]) -> Result<HashSet<NixComponent>> {
+fn combine_closures(
+    exposed_components: impl IntoIterator<Item = NixComponent>,
+) -> Result<HashSet<NixComponent>> {
     let mut closure = HashSet::new();
     for component in exposed_components {
         closure.extend(component.closure()?);
@@ -85,28 +87,44 @@ fn combine_closures(exposed_components: &[NixComponent]) -> Result<HashSet<NixCo
 }
 
 fn create_container(args: CreateContainerArgs) -> Result<()> {
-    tracing::trace!("Creating container");
+    tracing::info!("Creating container");
     let [command, extra_args @ ..] = &args.command[..] else {
         anyhow::bail!("No command given");
     };
 
+    tracing::info!("Realising components");
+    let exposed_components = args
+        .exposed_components
+        .iter()
+        .map(|c| c.clone().realise())
+        .collect::<Result<HashSet<_>>>()?;
+
     let mut container = container::Container::temp_container();
     container.set_keep(args.keep_container);
-    tracing::trace!("Container root: {}", container.root().display());
+    tracing::info!("Container root: {}", container.root().display());
 
-    let closure = combine_closures(&args.exposed_components)?;
-    tracing::trace!("Mounting components");
+    let closure = combine_closures(exposed_components.clone())?
+        .into_iter()
+        .map(|c| c.store_path())
+        .collect::<Result<Vec<_>, _>>()?;
+    tracing::info!("Mounting components");
     for component in &closure {
-        container.bind_mount(component.store_path(), component.store_path(), true)?;
+        container.bind_mount(component, component, true)?;
     }
-    tracing::trace!("Mounting volumes");
+    tracing::info!("Mounting volumes");
     for volume in &args.volumes {
         container.bind_mount(&volume.host_path, &volume.container_path, false)?;
     }
 
     let mut container_cmd = std::process::Command::new(command);
     container_cmd.args(extra_args);
-    set_command_environment(&mut container_cmd, args);
+
+    expose_component_paths(&mut container_cmd, exposed_components);
+
+    container_cmd
+        .stdin(std::process::Stdio::inherit())
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit());
 
     let container_pid = container
         .spawn(container_cmd)
@@ -119,22 +137,26 @@ fn create_container(args: CreateContainerArgs) -> Result<()> {
     Ok(())
 }
 
-fn set_command_environment(container_cmd: &mut std::process::Command, args: CreateContainerArgs) {
+fn expose_component_paths(
+    container_cmd: &mut std::process::Command,
+    exposed_components: HashSet<NixComponent>,
+) {
+    let container_cmd: &mut std::process::Command = container_cmd;
     container_cmd.current_dir("/");
-    let path_var = args
-        .exposed_components
+    let path_var = exposed_components
         .iter()
-        .map(|p| p.store_path().join("bin").as_os_str().to_os_string())
+        .map(|p| {
+            p.store_path()
+                .expect("Guaranteed by calling realise()")
+                .join("bin")
+                .as_os_str()
+                .to_os_string()
+        })
         .collect::<Vec<_>>()
         .join(OsString::from(":").as_os_str());
 
     tracing::trace!("Setting $PATH: {path_var:?}");
     container_cmd.env_clear().env("PATH", path_var);
-
-    container_cmd
-        .stdin(std::process::Stdio::inherit())
-        .stdout(std::process::Stdio::inherit())
-        .stderr(std::process::Stdio::inherit());
 }
 
 fn initialize_container(args: InitializeContainerArgs) -> Result<()> {
