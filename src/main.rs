@@ -17,15 +17,31 @@ mod unix_helpers;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
-struct Args {
-    #[command(subcommand)]
-    command: Command,
+struct CliArgs {
+    /// Volumes to mount into the container.
+    #[arg(short = 'v', long = "volume", value_name = "HOST PATH:CONTAINER PATH")]
+    volumes: Vec<VolumeMount>,
+
+    /// Additional nix components to bind mount into the container.
+    #[arg(short = 'e', long = "expose", value_name = "NIX STORE PATH")]
+    exposed_components: Vec<NixComponent>,
+
+    /// Keep the container root directory after the command has run.
+    #[arg(short = 'k', long = "keep")]
+    keep_container: bool,
+
+    #[arg(long, hide = true, default_value_t = std::env::var("CONTAINIX_CONTAINER").is_ok())]
+    container_mode: bool,
+
+    /// The command to run in the container.
+    #[arg(trailing_var_arg = true)]
+    command: Vec<String>,
 }
 
 #[derive(Parser, Debug)]
 enum Command {
-    CreateContainer(CreateContainerArgs),
-    InitializeContainer(InitializeContainerArgs),
+    CreateContainer(Args),
+    InitializeContainer(Args),
 }
 
 #[derive(Debug, Clone)]
@@ -50,23 +66,7 @@ impl FromStr for VolumeMount {
     }
 }
 #[derive(Parser, Debug)]
-struct CreateContainerArgs {
-    /// Volumes to mount into the container.
-    #[arg(short = 'v', long = "volume", value_name = "HOST PATH:CONTAINER PATH")]
-    volumes: Vec<VolumeMount>,
-
-    /// Additional nix components to bind mount into the container.
-    #[arg(short = 'e', long = "expose", value_name = "NIX STORE PATH")]
-    exposed_components: Vec<NixComponent>,
-
-    /// Keep the container root directory after the command has run.
-    #[arg(short = 'k', long = "keep")]
-    keep_container: bool,
-
-    /// The command to run in the container.
-    #[arg(trailing_var_arg = true)]
-    command: Vec<String>,
-}
+struct Args {}
 
 #[derive(Parser, Debug)]
 struct InitializeContainerArgs {}
@@ -82,12 +82,7 @@ fn combine_closures(
     Ok(closure)
 }
 
-fn create_container(args: CreateContainerArgs) -> Result<()> {
-    tracing::info!("Creating container");
-    let [command, extra_args @ ..] = &args.command[..] else {
-        anyhow::bail!("No command given");
-    };
-
+fn create_container(args: CliArgs) -> Result<()> {
     tracing::info!("Realising components");
     let exposed_components = args
         .exposed_components
@@ -95,7 +90,7 @@ fn create_container(args: CreateContainerArgs) -> Result<()> {
         .map(|c| c.clone().realise())
         .collect::<Result<HashSet<_>>>()?;
 
-    let mut container = container::Container::temp_container();
+    let mut container = container::Container::temp_container()?;
     container.set_keep(args.keep_container);
     tracing::info!("Container root: {}", container.root().display());
 
@@ -112,18 +107,10 @@ fn create_container(args: CreateContainerArgs) -> Result<()> {
         container.bind_mount(&volume.host_path, &volume.container_path, false)?;
     }
 
-    let Some(command_path) = resolve_command(command, &exposed_components) else {
-        anyhow::bail!("Command '{command}' not found in exposed components.");
-    };
-
-    let mut container_cmd = std::process::Command::new(command_path);
-    container_cmd.args(extra_args);
-
+    let mut container_cmd = std::process::Command::new("/containix");
+    container_cmd.args(std::env::args_os().skip(1));
+    container_cmd.env("CONTAINIX_CONTAINER", "1");
     container_cmd.current_dir("/");
-
-    let path_var = build_path_var(&exposed_components);
-    tracing::trace!("Setting $PATH: {path_var:?}");
-    container_cmd.env_clear().env("PATH", &path_var);
 
     container_cmd
         .stdin(std::process::Stdio::inherit())
@@ -195,8 +182,9 @@ fn expose_component_paths(
     path_var
 }
 
-fn initialize_container(args: InitializeContainerArgs) -> Result<()> {
-    todo!()
+fn initialize_container(args: CliArgs) -> Result<()> {
+    println!("Initializing container");
+    Ok(())
 }
 
 fn main() -> Result<()> {
@@ -206,10 +194,11 @@ fn main() -> Result<()> {
         .with_writer(std::io::stderr)
         .init();
     tracing::trace!("Starting containix");
-    let args = Args::parse();
+    let args = CliArgs::parse();
 
-    match args.command {
-        Command::CreateContainer(host_args) => create_container(host_args),
-        Command::InitializeContainer(container_args) => initialize_container(container_args),
+    if args.container_mode {
+        initialize_container(args)
+    } else {
+        create_container(args)
     }
 }

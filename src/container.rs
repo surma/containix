@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use derive_more::derive::Deref;
 
 use std::{
-    os::unix::process::CommandExt,
+    os::unix::{fs::PermissionsExt, process::CommandExt},
     path::{Path, PathBuf},
     process::Command,
 };
@@ -17,21 +17,23 @@ pub struct Container {
 }
 
 impl Container {
-    pub fn new(root: PathBuf) -> Self {
-        Self {
+    pub fn new(root: PathBuf) -> Result<Self> {
+        copy_containix(&root)?;
+        Ok(Self {
             root,
             mounts: Vec::new(),
             keep: false,
-        }
+        })
     }
 
     pub fn set_keep(&mut self, keep: bool) {
         self.keep = keep;
     }
 
-    pub fn temp_container() -> Self {
+    pub fn temp_container() -> Result<Self> {
         let container_id = uuid::Uuid::new_v4().to_string();
         let temp_dir = std::env::temp_dir().join("containix").join(container_id);
+        std::fs::create_dir_all(&temp_dir).context("Creating temporary directory")?;
         Self::new(temp_dir)
     }
 
@@ -85,6 +87,16 @@ impl Container {
             nix::unistd::ForkResult::Parent { child } => Ok(ContainerHandle(child)),
         }
     }
+}
+
+fn copy_containix(root: &PathBuf) -> Result<()> {
+    let target = root.join("containix");
+
+    std::fs::copy("/proc/self/exe", &target)?;
+    let mut permissions = std::fs::metadata(root.join("containix"))?.permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&target, permissions)?;
+    Ok(())
 }
 
 #[derive(Debug, Deref, Hash, PartialEq, Eq, Ord, PartialOrd)]
