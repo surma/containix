@@ -9,11 +9,13 @@ use std::{
 
 use anyhow::{Context, Result};
 use clap::Parser;
+use linux_net::{network_interface_names, set_ip_address};
 use nix_helpers::{NixComponent, NixStoreItem};
 use serde::{Deserialize, Serialize};
 use tracing_subscriber::{fmt, EnvFilter};
 
 mod container;
+mod linux_net;
 mod nix_helpers;
 mod unix_helpers;
 
@@ -216,6 +218,16 @@ fn main() -> Result<()> {
         .with_target(false)
         .with_writer(std::io::stderr)
         .init();
+
+    let interfaces = network_interface_names()?;
+    println!("Interfaces: {:?}", interfaces);
+    set_ip_address(
+        "t1",
+        std::net::Ipv4Addr::from_str("10.1.0.1")?,
+        std::net::Ipv4Addr::from_str("255.255.0.0")?,
+    )?;
+    return Ok(());
+
     if is_container() {
         initialize_container()
     } else {

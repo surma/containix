@@ -1,5 +1,5 @@
 use anyhow::Result;
-use std::path::Path;
+use std::{collections::HashSet, path::Path};
 
 pub fn bind_mount(
     src: impl AsRef<Path>,
@@ -42,4 +42,11 @@ pub fn mount_proc(target_dir: impl AsRef<Path>) -> Result<()> {
 pub fn unmount(path: impl AsRef<Path>) -> Result<()> {
     nix::mount::umount(path.as_ref())?;
     Ok(())
+}
+
+pub fn str_as_array<const T: usize>(v: impl AsRef<str>) -> [u8; T] {
+    let mut arr = [0; T];
+    let by = v.as_ref().as_bytes();
+    arr[..by.len().min(T - 1)].copy_from_slice(&by[..by.len().min(T - 1)]);
+    arr
 }
