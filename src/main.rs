@@ -52,15 +52,11 @@ impl FromStr for VolumeMount {
 #[derive(Parser, Debug)]
 struct CreateContainerArgs {
     /// Volumes to mount into the container.
-    #[arg(
-        short = 'v',
-        long = "volume",
-        value_name = "<HOST PATH>:<CONTAINER PATH>"
-    )]
+    #[arg(short = 'v', long = "volume", value_name = "HOST PATH:CONTAINER PATH")]
     volumes: Vec<VolumeMount>,
 
     /// Additional nix components to bind mount into the container.
-    #[arg(short = 'e', long = "expose", value_name = "<NIX STORE PATH>")]
+    #[arg(short = 'e', long = "expose", value_name = "NIX STORE PATH")]
     exposed_components: Vec<NixComponent>,
 
     /// Keep the container root directory after the command has run.
