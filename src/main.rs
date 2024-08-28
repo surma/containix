@@ -1,17 +1,19 @@
 use std::{
     collections::HashSet,
     ffi::OsString,
+    os::unix::process::CommandExt,
     path::{Path, PathBuf},
     str::FromStr,
 };
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use nix::NixComponent;
+use nix_helpers::NixComponent;
 use tracing_subscriber::{fmt, EnvFilter};
 
 mod container;
-mod nix;
+mod nix_helpers;
+mod unix_helpers;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -95,21 +97,30 @@ fn create_container(args: CreateContainerArgs) -> Result<()> {
     let closure = combine_closures(&args.exposed_components)?;
     tracing::trace!("Mounting components");
     for component in &closure {
-        tracing::trace!("Mounting component: {component:?}");
         container.bind_mount(component.store_path(), component.store_path(), true)?;
     }
     tracing::trace!("Mounting volumes");
     for volume in &args.volumes {
-        tracing::trace!("Mounting volume: {volume:?}");
         container.bind_mount(&volume.host_path, &volume.container_path, false)?;
     }
 
-    let mut child_process = std::process::Command::new("/usr/bin/unshare");
-    child_process.arg("-R").arg(container.root()).arg("--mount");
+    let mut container_cmd = std::process::Command::new(command);
+    container_cmd.args(extra_args);
+    set_command_environment(&mut container_cmd, args);
 
-    child_process.arg(&command);
-    child_process.args(extra_args);
+    let container_pid = container
+        .spawn(container_cmd)
+        .context("Spawning container")?;
 
+    container_pid
+        .wait()
+        .context("Waiting for container to exit")?;
+
+    Ok(())
+}
+
+fn set_command_environment(container_cmd: &mut std::process::Command, args: CreateContainerArgs) {
+    container_cmd.current_dir("/");
     let path_var = args
         .exposed_components
         .iter()
@@ -118,23 +129,12 @@ fn create_container(args: CreateContainerArgs) -> Result<()> {
         .join(OsString::from(":").as_os_str());
 
     tracing::trace!("Setting $PATH: {path_var:?}");
-    child_process.env_clear().env("PATH", path_var);
+    container_cmd.env_clear().env("PATH", path_var);
 
-    tracing::trace!(
-        "Running command in container: {:?}",
-        child_process.get_args()
-    );
-    child_process
+    container_cmd
         .stdin(std::process::Stdio::inherit())
         .stdout(std::process::Stdio::inherit())
         .stderr(std::process::Stdio::inherit());
-
-    let mut c = child_process
-        .spawn()
-        .context("Spawning command in container")?;
-    c.wait().context("Waiting for container to terminate")?;
-
-    Ok(())
 }
 
 fn initialize_container(args: InitializeContainerArgs) -> Result<()> {
