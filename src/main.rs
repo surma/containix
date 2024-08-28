@@ -1,6 +1,6 @@
 use std::{
     collections::HashSet,
-    ffi::OsString,
+    ffi::{OsStr, OsString},
     os::unix::process::CommandExt,
     path::{Path, PathBuf},
     str::FromStr,
@@ -116,10 +116,18 @@ fn create_container(args: CreateContainerArgs) -> Result<()> {
         container.bind_mount(&volume.host_path, &volume.container_path, false)?;
     }
 
-    let mut container_cmd = std::process::Command::new(command);
+    let Some(command_path) = resolve_command(command, &exposed_components) else {
+        anyhow::bail!("Command '{command}' not found in exposed components.");
+    };
+
+    let mut container_cmd = std::process::Command::new(command_path);
     container_cmd.args(extra_args);
 
-    expose_component_paths(&mut container_cmd, exposed_components);
+    container_cmd.current_dir("/");
+
+    let path_var = build_path_var(&exposed_components);
+    tracing::trace!("Setting $PATH: {path_var:?}");
+    container_cmd.env_clear().env("PATH", &path_var);
 
     container_cmd
         .stdin(std::process::Stdio::inherit())
@@ -137,10 +145,41 @@ fn create_container(args: CreateContainerArgs) -> Result<()> {
     Ok(())
 }
 
+fn resolve_command<'a>(
+    command: impl AsRef<OsStr>,
+    exposed_components: impl IntoIterator<Item = &'a NixComponent>,
+) -> Option<PathBuf> {
+    let command = command.as_ref();
+    exposed_components
+        .into_iter()
+        .map(|c| {
+            c.store_path()
+                .expect("Guaranteed by calling realise()")
+                .join("bin")
+                .join(command)
+        })
+        .find(|p| p.exists())
+}
+
+fn build_path_var<'a>(exposed_components: impl IntoIterator<Item = &'a NixComponent>) -> OsString {
+    let path_var = exposed_components
+        .into_iter()
+        .map(|p| {
+            p.store_path()
+                .expect("Guaranteed by calling realise()")
+                .join("bin")
+                .as_os_str()
+                .to_os_string()
+        })
+        .collect::<Vec<_>>()
+        .join(OsString::from(":").as_os_str());
+    path_var
+}
+
 fn expose_component_paths(
     container_cmd: &mut std::process::Command,
     exposed_components: HashSet<NixComponent>,
-) {
+) -> OsString {
     let container_cmd: &mut std::process::Command = container_cmd;
     container_cmd.current_dir("/");
     let path_var = exposed_components
@@ -156,7 +195,8 @@ fn expose_component_paths(
         .join(OsString::from(":").as_os_str());
 
     tracing::trace!("Setting $PATH: {path_var:?}");
-    container_cmd.env_clear().env("PATH", path_var);
+    container_cmd.env_clear().env("PATH", &path_var);
+    path_var
 }
 
 fn initialize_container(args: InitializeContainerArgs) -> Result<()> {

@@ -72,6 +72,7 @@ impl Container {
                 | CloneFlags::CLONE_NEWPID
                 | CloneFlags::CLONE_FILES
                 | CloneFlags::CLONE_FS,
+            // | CloneFlags::CLONE_NEWNET,
         )
         .context("Unsharing namespaces")?;
 
