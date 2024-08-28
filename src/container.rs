@@ -7,7 +7,7 @@ use std::{
     process::Command,
 };
 
-use crate::unix_helpers::{bind_mount, unmount};
+use crate::unix_helpers::{bind_mount, mount_proc, unmount};
 
 #[derive(Debug)]
 pub struct Container {
@@ -52,21 +52,33 @@ impl Container {
         self.mounts.push(target.to_path_buf());
         Ok(())
     }
+
     pub fn root(&self) -> &Path {
         &self.root
     }
 
+    fn mount_proc(&self) -> Result<()> {
+        let proc = Path::new("/proc");
+        std::fs::create_dir_all(proc).context("Creating proc directory")?;
+        mount_proc(proc).context("Mounting proc")?;
+        Ok(())
+    }
+
     pub fn spawn(&self, mut command: Command) -> Result<ContainerHandle> {
+        use nix::sched::CloneFlags;
+
+        nix::sched::unshare(
+            CloneFlags::CLONE_NEWNS
+                | CloneFlags::CLONE_NEWPID
+                | CloneFlags::CLONE_FILES
+                | CloneFlags::CLONE_FS,
+        )
+        .context("Unsharing namespaces")?;
+
         match unsafe { nix::unistd::fork() }.context("Forking")? {
             nix::unistd::ForkResult::Child => {
-                nix::sched::unshare(
-                    nix::sched::CloneFlags::CLONE_NEWNS
-                        | nix::sched::CloneFlags::CLONE_FILES
-                        | nix::sched::CloneFlags::CLONE_FS,
-                )
-                .context("Unsharing namespaces")?;
                 nix::unistd::chroot(self.root()).context("Chrooting container")?;
-
+                self.mount_proc().context("Mounting proc in container")?;
                 return Result::Err(command.exec()).context("Executing command in container");
             }
             nix::unistd::ForkResult::Parent { child } => Ok(ContainerHandle(child)),
@@ -99,6 +111,15 @@ impl Drop for Container {
                     "Failed cleaning up bind mount {}: {e}",
                     target_dir.display()
                 );
+            }
+        }
+
+        let proc_dir = self.root.join("proc");
+        if let Ok(metadata) = std::fs::metadata(&proc_dir) {
+            if metadata.is_dir() {
+                if let Err(e) = unmount(&proc_dir) {
+                    tracing::error!("Failed unmounting proc: {e}");
+                }
             }
         }
 
