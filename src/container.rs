@@ -46,7 +46,7 @@ impl Container {
         let src = src.as_ref();
         let target = target.as_ref();
         let target = target.strip_prefix("/").unwrap_or(target);
-        let target_dir = self.root.join(&target);
+        let target_dir = self.root.join(target);
         tracing::trace!("Binding mount {src:?} -> {target_dir:?}");
         std::fs::create_dir_all(&target_dir).context("Creating directory for bind mount")?;
 
@@ -82,18 +82,18 @@ impl Container {
             nix::unistd::ForkResult::Child => {
                 nix::unistd::chroot(self.root()).context("Chrooting container")?;
                 self.mount_proc().context("Mounting proc in container")?;
-                return Result::Err(command.exec()).context("Executing command in container");
+                Result::Err(command.exec()).context("Executing command in container")
             }
             nix::unistd::ForkResult::Parent { child } => Ok(ContainerHandle(child)),
         }
     }
 }
 
-fn copy_containix(root: &PathBuf) -> Result<()> {
-    let target = root.join("containix");
+fn copy_containix(root: impl AsRef<Path>) -> Result<()> {
+    let target = root.as_ref().join("containix");
 
     std::fs::copy("/proc/self/exe", &target)?;
-    let mut permissions = std::fs::metadata(root.join("containix"))?.permissions();
+    let mut permissions = std::fs::metadata(&target)?.permissions();
     permissions.set_mode(0o755);
     std::fs::set_permissions(&target, permissions)?;
     Ok(())
@@ -118,7 +118,7 @@ impl Drop for Container {
         }
 
         for mount in &self.mounts {
-            let target_dir = self.root.join(&mount);
+            let target_dir = self.root.join(mount);
             if let Err(e) = unmount(&target_dir) {
                 tracing::error!(
                     "Failed cleaning up bind mount {}: {e}",

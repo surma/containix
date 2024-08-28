@@ -1,12 +1,5 @@
 use anyhow::{Context, Result};
-use derive_more::derive::{Deref, From, Into};
-use std::{
-    collections::HashSet,
-    ffi::{OsStr, OsString},
-    path::{Components, Path, PathBuf},
-    process::Command,
-    str::FromStr,
-};
+use std::{collections::HashSet, ffi::OsStr, path::PathBuf, process::Command, str::FromStr};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, enum_as_inner::EnumAsInner)]
 pub enum NixComponent {
@@ -59,7 +52,7 @@ impl NixComponent {
                 Ok(path)
             }
             NixComponent::Nixpkgs(component) => {
-                anyhow::bail!("Can’t provide path for an unbuilt Nixpkgs component")
+                anyhow::bail!("Can’t provide path for unbuilt Nixpkgs component {component}")
             }
         }
     }
@@ -67,7 +60,7 @@ impl NixComponent {
     pub fn closure(&self) -> Result<HashSet<NixComponent>> {
         tracing::trace!("Getting closure for {self:?}");
         let output = Command::new("nix-store")
-            .args(&["--query", "--requisites"])
+            .args(["--query", "--requisites"])
             .arg(self.store_path()?)
             .output()
             .context("Running nix-store query for closure")?;
@@ -94,7 +87,7 @@ impl NixComponent {
         let parts: Vec<_> = path.components().collect();
         let component = match parts.as_slice() {
             &[Component::RootDir, Component::Normal(nix), Component::Normal(store), Component::Normal(component), ..]
-                if nix == OsString::from("nix") && store == OsString::from("store") =>
+                if nix == "nix" && store == "store" =>
             {
                 component
             }

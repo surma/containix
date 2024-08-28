@@ -1,8 +1,7 @@
 use std::{
     collections::HashSet,
     ffi::{OsStr, OsString},
-    os::unix::process::CommandExt,
-    path::{Path, PathBuf},
+    path::PathBuf,
     str::FromStr,
 };
 

@@ -1,5 +1,5 @@
 use anyhow::Result;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 pub fn bind_mount(
     src: impl AsRef<Path>,
