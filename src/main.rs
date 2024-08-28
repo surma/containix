@@ -1,13 +1,16 @@
 use std::{
     collections::HashSet,
     ffi::{OsStr, OsString},
-    path::PathBuf,
+    os::unix::process::CommandExt,
+    path::{Path, PathBuf},
+    process::Command,
     str::FromStr,
 };
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use nix_helpers::NixComponent;
+use nix_helpers::{NixComponent, NixStoreItem};
+use serde::{Deserialize, Serialize};
 use tracing_subscriber::{fmt, EnvFilter};
 
 mod container;
@@ -29,18 +32,9 @@ struct CliArgs {
     #[arg(short = 'k', long = "keep")]
     keep_container: bool,
 
-    #[arg(long, hide = true, default_value_t = std::env::var("CONTAINIX_CONTAINER").is_ok())]
-    container_mode: bool,
-
     /// The command to run in the container.
     #[arg(trailing_var_arg = true)]
     command: Vec<String>,
-}
-
-#[derive(Parser, Debug)]
-enum Command {
-    CreateContainer(Args),
-    InitializeContainer(Args),
 }
 
 #[derive(Debug, Clone)]
@@ -64,11 +58,6 @@ impl FromStr for VolumeMount {
         })
     }
 }
-#[derive(Parser, Debug)]
-struct Args {}
-
-#[derive(Parser, Debug)]
-struct InitializeContainerArgs {}
 
 fn combine_closures(
     exposed_components: impl IntoIterator<Item = NixComponent>,
@@ -81,7 +70,16 @@ fn combine_closures(
     Ok(closure)
 }
 
-fn create_container(args: CliArgs) -> Result<()> {
+#[derive(Debug, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ContainerConfig {
+    pub command: Vec<String>,
+    pub exposed_components: Vec<NixStoreItem>,
+}
+
+fn create_container() -> Result<()> {
+    tracing::info!("Starting containix");
+    let args = CliArgs::parse();
     tracing::info!("Realising components");
     let exposed_components = args
         .exposed_components
@@ -92,6 +90,24 @@ fn create_container(args: CliArgs) -> Result<()> {
     let mut container = container::Container::temp_container()?;
     container.set_keep(args.keep_container);
     tracing::info!("Container root: {}", container.root().display());
+
+    let config = ContainerConfig {
+        command: args.command,
+        exposed_components: exposed_components
+            .iter()
+            .map(|c| {
+                c.as_store()
+                    .expect("Guaranteed by NixComponent::realise()")
+                    .clone()
+            })
+            .collect(),
+    };
+    serde_json::to_writer_pretty(
+        std::fs::File::create(container.root().join("containix.config.json"))
+            .context("Creating container config file")?,
+        &config,
+    )
+    .context("Writing container config")?;
 
     let closure = combine_closures(exposed_components.clone())?
         .into_iter()
@@ -127,19 +143,14 @@ fn create_container(args: CliArgs) -> Result<()> {
     Ok(())
 }
 
-fn resolve_command<'a>(
+fn resolve_command<I: AsRef<Path>>(
     command: impl AsRef<OsStr>,
-    exposed_components: impl IntoIterator<Item = &'a NixComponent>,
+    exposed_components: impl IntoIterator<Item = I>,
 ) -> Option<PathBuf> {
     let command = command.as_ref();
     exposed_components
         .into_iter()
-        .map(|c| {
-            c.store_path()
-                .expect("Guaranteed by calling realise()")
-                .join("bin")
-                .join(command)
-        })
+        .map(|c| c.as_ref().join(command))
         .find(|p| p.exists())
 }
 
@@ -158,32 +169,42 @@ fn build_path_var<'a>(exposed_components: impl IntoIterator<Item = &'a NixCompon
     path_var
 }
 
-fn expose_component_paths(
-    container_cmd: &mut std::process::Command,
-    exposed_components: HashSet<NixComponent>,
-) -> OsString {
-    let container_cmd: &mut std::process::Command = container_cmd;
-    container_cmd.current_dir("/");
-    let path_var = exposed_components
-        .iter()
-        .map(|p| {
-            p.store_path()
-                .expect("Guaranteed by calling realise()")
-                .join("bin")
-                .as_os_str()
-                .to_os_string()
-        })
-        .collect::<Vec<_>>()
-        .join(OsString::from(":").as_os_str());
+fn initialize_container() -> Result<()> {
+    tracing::info!("Starting containix in container");
+    let config_path =
+        std::fs::File::open("/containix.config.json").context("Opening container config")?;
+    let config: ContainerConfig =
+        serde_json::from_reader(config_path).context("Parsing container config")?;
 
-    tracing::trace!("Setting $PATH: {path_var:?}");
-    container_cmd.env_clear().env("PATH", &path_var);
-    path_var
+    let component_paths: Vec<_> = config
+        .exposed_components
+        .iter()
+        .map(|c| c.as_path().join("bin").as_os_str().to_os_string())
+        .collect();
+    let path_var = component_paths.join(&OsString::from(":"));
+
+    let Some(command_name) = config.command.first() else {
+        anyhow::bail!("No command to run");
+    };
+
+    let Some(command) = resolve_command(command_name, &component_paths) else {
+        anyhow::bail!("Command {} not found in exposed components", command_name);
+    };
+
+    let err = Command::new(command)
+        .args(&config.command[1..])
+        .current_dir("/")
+        .env("PATH", path_var)
+        .stdin(std::process::Stdio::inherit())
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit())
+        .exec();
+
+    Err(err.into())
 }
 
-fn initialize_container(args: CliArgs) -> Result<()> {
-    println!("Initializing container");
-    Ok(())
+fn is_container() -> bool {
+    std::env::var("CONTAINIX_CONTAINER").is_ok()
 }
 
 fn main() -> Result<()> {
@@ -192,12 +213,9 @@ fn main() -> Result<()> {
         .with_target(false)
         .with_writer(std::io::stderr)
         .init();
-    tracing::trace!("Starting containix");
-    let args = CliArgs::parse();
-
-    if args.container_mode {
-        initialize_container(args)
+    if is_container() {
+        initialize_container()
     } else {
-        create_container(args)
+        create_container()
     }
 }
