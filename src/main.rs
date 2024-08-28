@@ -28,6 +28,10 @@ struct CliArgs {
     #[arg(short = 'e', long = "expose", value_name = "NIX STORE PATH")]
     exposed_components: Vec<NixComponent>,
 
+    /// Working directory inside the container.
+    #[arg(short, long, value_name = "PATH", default_value = "/")]
+    workdir: PathBuf,
+
     /// Keep the container root directory after the command has run.
     #[arg(short = 'k', long = "keep")]
     keep_container: bool,
@@ -125,7 +129,7 @@ fn create_container() -> Result<()> {
     let mut container_cmd = std::process::Command::new("/containix");
     container_cmd.args(std::env::args_os().skip(1));
     container_cmd.env("CONTAINIX_CONTAINER", "1");
-    container_cmd.current_dir("/");
+    container_cmd.current_dir(&args.workdir);
 
     container_cmd
         .stdin(std::process::Stdio::inherit())
@@ -193,7 +197,6 @@ fn initialize_container() -> Result<()> {
 
     let err = Command::new(command)
         .args(&config.command[1..])
-        .current_dir("/")
         .env("PATH", path_var)
         .stdin(std::process::Stdio::inherit())
         .stdout(std::process::Stdio::inherit())
