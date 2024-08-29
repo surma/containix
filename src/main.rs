@@ -9,7 +9,7 @@ use std::{
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use nix_helpers::{NixComponent, NixStoreItem};
+use nix_helpers::{combine_closures, NixComponent, NixStoreItem, Nixpkgs};
 use serde::{Deserialize, Serialize};
 use tracing_subscriber::{fmt, EnvFilter};
 
@@ -31,6 +31,14 @@ struct CliArgs {
     /// Working directory inside the container.
     #[arg(short, long, value_name = "PATH", default_value = "/")]
     workdir: PathBuf,
+
+    /// Nixpkgs version to use.
+    #[arg(
+        long,
+        value_name = "NIXPKGS",
+        default_value = "https://github.com/NixOS/nixpkgs/archive/refs/tags/24.05.tar.gz?sha256=1lr1h35prqkd1mkmzriwlpvxcb34kmhc9dnr48gkm8hh089hifmx"
+    )]
+    nixpkgs: Nixpkgs,
 
     /// Keep the container root directory after the command has run.
     #[arg(short = 'k', long = "keep")]
@@ -63,17 +71,6 @@ impl FromStr for VolumeMount {
     }
 }
 
-fn combine_closures(
-    exposed_components: impl IntoIterator<Item = NixComponent>,
-) -> Result<HashSet<NixComponent>> {
-    let mut closure = HashSet::new();
-    for component in exposed_components {
-        closure.extend(component.closure()?);
-        closure.insert(component.clone());
-    }
-    Ok(closure)
-}
-
 #[derive(Debug, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct ContainerConfig {
@@ -88,7 +85,7 @@ fn create_container() -> Result<()> {
     let exposed_components = args
         .exposed_components
         .iter()
-        .map(|c| c.clone().realise())
+        .map(|c| c.clone().realise(&args.nixpkgs))
         .collect::<Result<HashSet<_>>>()?;
 
     let mut container = container::Container::temp_container()?;
@@ -156,21 +153,6 @@ fn resolve_command<I: AsRef<Path>>(
         .into_iter()
         .map(|c| c.as_ref().join(command))
         .find(|p| p.exists())
-}
-
-fn build_path_var<'a>(exposed_components: impl IntoIterator<Item = &'a NixComponent>) -> OsString {
-    let path_var = exposed_components
-        .into_iter()
-        .map(|p| {
-            p.store_path()
-                .expect("Guaranteed by calling realise()")
-                .join("bin")
-                .as_os_str()
-                .to_os_string()
-        })
-        .collect::<Vec<_>>()
-        .join(OsString::from(":").as_os_str());
-    path_var
 }
 
 fn initialize_container() -> Result<()> {
