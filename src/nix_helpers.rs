@@ -5,6 +5,8 @@ use std::{
     collections::HashSet, ffi::OsStr, fmt::Display, path::PathBuf, process::Command, str::FromStr,
 };
 
+use crate::command::run_command;
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, From)]
 pub struct NixStoreItem(String);
 
@@ -172,23 +174,16 @@ impl Nixpkgs {
         let component_name = component_name.as_ref();
         tracing::trace!("Realising `{component_name}` from {self}");
 
-        let output = Command::new("nix-build")
+        let mut command = Command::new("nix-build");
+        command
             .arg("-E")
             .arg(self.import_expression())
             .arg("-A")
             .arg(component_name)
             .arg("-Q")
-            .arg("--no-out-link")
-            .output()
-            .context("Running nix-build")?;
+            .arg("--no-out-link");
 
-        if !output.status.success() {
-            anyhow::bail!(
-                "Failed to realise Nixpkgs component: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-        }
-
+        let output = run_command(command).context("Running nix-build")?;
         let path = PathBuf::from(String::from_utf8(output.stdout)?.trim());
         Ok(path)
     }

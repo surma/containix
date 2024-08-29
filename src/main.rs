@@ -9,12 +9,16 @@ use std::{
 
 use anyhow::{Context, Result};
 use clap::Parser;
+use container::ContainerHandle;
 use nix_helpers::{combine_closures, NixComponent, NixStoreItem, Nixpkgs};
 use serde::{Deserialize, Serialize};
+use tools::NIXPKGS_24_05;
 use tracing_subscriber::{fmt, EnvFilter};
 
+mod command;
 mod container;
 mod nix_helpers;
+mod tools;
 mod unix_helpers;
 
 #[derive(Parser, Debug)]
@@ -36,7 +40,7 @@ struct CliArgs {
     #[arg(
         long,
         value_name = "NIXPKGS",
-        default_value = "https://github.com/NixOS/nixpkgs/archive/refs/tags/24.05.tar.gz?sha256=1lr1h35prqkd1mkmzriwlpvxcb34kmhc9dnr48gkm8hh089hifmx"
+        default_value = NIXPKGS_24_05
     )]
     nixpkgs: Nixpkgs,
 
@@ -76,6 +80,7 @@ impl FromStr for VolumeMount {
 pub struct ContainerConfig {
     pub command: Vec<String>,
     pub exposed_components: Vec<NixStoreItem>,
+    pub workdir: PathBuf,
 }
 
 fn create_container() -> Result<()> {
@@ -102,6 +107,7 @@ fn create_container() -> Result<()> {
                     .clone()
             })
             .collect(),
+        workdir: args.workdir,
     };
     serde_json::to_writer_pretty(
         std::fs::File::create(container.root().join("containix.config.json"))
@@ -123,23 +129,16 @@ fn create_container() -> Result<()> {
         container.bind_mount(&volume.host_path, &volume.container_path, false)?;
     }
 
-    let mut container_cmd = std::process::Command::new("/containix");
-    container_cmd.args(std::env::args_os().skip(1));
-    container_cmd.env("CONTAINIX_CONTAINER", "1");
-    container_cmd.current_dir(&args.workdir);
-
-    container_cmd
-        .stdin(std::process::Stdio::inherit())
-        .stdout(std::process::Stdio::inherit())
-        .stderr(std::process::Stdio::inherit());
-
-    let container_pid = container
-        .spawn(container_cmd)
+    let mut container_pid = container
+        .spawn("/containix", &[] as &[&OsStr])
         .context("Spawning container")?;
 
     container_pid
         .wait()
         .context("Waiting for container to exit")?;
+
+    drop(container_pid);
+    drop(container);
 
     Ok(())
 }
@@ -161,6 +160,8 @@ fn initialize_container() -> Result<()> {
         std::fs::File::open("/containix.config.json").context("Opening container config")?;
     let config: ContainerConfig =
         serde_json::from_reader(config_path).context("Parsing container config")?;
+
+    std::env::set_current_dir(&config.workdir).context("Setting working directory")?;
 
     let component_paths: Vec<_> = config
         .exposed_components

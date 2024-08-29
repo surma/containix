@@ -2,12 +2,18 @@ use anyhow::{Context, Result};
 use derive_more::derive::Deref;
 
 use std::{
+    ffi::OsStr,
     os::unix::{fs::PermissionsExt, process::CommandExt},
     path::{Path, PathBuf},
     process::Command,
+    str::FromStr,
 };
 
-use crate::unix_helpers::{bind_mount, mount_proc, unmount};
+use crate::{
+    nix_helpers::Nixpkgs,
+    tools::UTIL_COMPONENT,
+    unix_helpers::{bind_mount, unmount},
+};
 
 #[derive(Debug)]
 pub struct Container {
@@ -59,33 +65,29 @@ impl Container {
         &self.root
     }
 
-    fn mount_proc(&self) -> Result<()> {
-        let proc = Path::new("/proc");
-        std::fs::create_dir_all(proc).context("Creating proc directory")?;
-        mount_proc(proc).context("Mounting proc")?;
-        Ok(())
-    }
+    pub fn spawn(
+        &self,
+        command: impl AsRef<OsStr>,
+        args: impl IntoIterator<Item = impl AsRef<OsStr>>,
+    ) -> Result<impl ContainerHandle> {
+        std::fs::create_dir_all(self.root().join("proc")).context("Creating proc directory")?;
 
-    pub fn spawn(&self, mut command: Command) -> Result<ContainerHandle> {
-        use nix::sched::CloneFlags;
-
-        nix::sched::unshare(
-            CloneFlags::CLONE_NEWNS
-                | CloneFlags::CLONE_NEWPID
-                | CloneFlags::CLONE_FILES
-                | CloneFlags::CLONE_FS,
-            // | CloneFlags::CLONE_NEWNET,
-        )
-        .context("Unsharing namespaces")?;
-
-        match unsafe { nix::unistd::fork() }.context("Forking")? {
-            nix::unistd::ForkResult::Child => {
-                nix::unistd::chroot(self.root()).context("Chrooting container")?;
-                self.mount_proc().context("Mounting proc in container")?;
-                Result::Err(command.exec()).context("Executing command in container")
-            }
-            nix::unistd::ForkResult::Parent { child } => Ok(ContainerHandle(child)),
-        }
+        let mut unshare = std::process::Command::new(UTIL_COMPONENT.join("bin").join("unshare"));
+        unshare.arg("--root");
+        unshare.arg(self.root());
+        unshare.arg("--fork");
+        unshare.arg("-m");
+        unshare.arg("-p");
+        unshare.arg("--mount-proc=/proc");
+        unshare.arg(command.as_ref());
+        unshare.args(args);
+        unshare.env_clear();
+        unshare.env("CONTAINIX_CONTAINER", "1");
+        unshare.stdout(std::process::Stdio::inherit());
+        unshare.stderr(std::process::Stdio::inherit());
+        unshare.stdin(std::process::Stdio::inherit());
+        let child = unshare.spawn()?;
+        Ok(child)
     }
 }
 
@@ -99,11 +101,17 @@ fn copy_containix(root: impl AsRef<Path>) -> Result<()> {
     Ok(())
 }
 
-#[derive(Debug, Deref, Hash, PartialEq, Eq, Ord, PartialOrd)]
-pub struct ContainerHandle(nix::unistd::Pid);
-impl ContainerHandle {
-    pub fn wait(&self) -> Result<nix::sys::wait::WaitStatus> {
-        Ok(nix::sys::wait::waitpid(self.0, None)?)
+pub trait ContainerHandle {
+    fn wait(&mut self) -> Result<u32>;
+}
+
+impl ContainerHandle for std::process::Child {
+    fn wait(&mut self) -> Result<u32> {
+        Ok(std::process::Child::wait(self)?
+            .code()
+            .unwrap_or(0)
+            .try_into()
+            .unwrap())
     }
 }
 
@@ -124,15 +132,6 @@ impl Drop for Container {
                     "Failed cleaning up bind mount {}: {e}",
                     target_dir.display()
                 );
-            }
-        }
-
-        let proc_dir = self.root.join("proc");
-        if let Ok(metadata) = std::fs::metadata(&proc_dir) {
-            if metadata.is_dir() {
-                if let Err(e) = unmount(&proc_dir) {
-                    tracing::error!("Failed unmounting proc: {e}");
-                }
             }
         }
 
