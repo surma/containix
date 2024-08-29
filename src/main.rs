@@ -9,6 +9,7 @@ use std::{
 
 use anyhow::{Context, Result};
 use clap::Parser;
+use futures_util::StreamExt;
 use nix_helpers::{NixComponent, NixStoreItem};
 use serde::{Deserialize, Serialize};
 use tracing_subscriber::{fmt, EnvFilter};
@@ -210,12 +211,64 @@ fn is_container() -> bool {
     std::env::var("CONTAINIX_CONTAINER").is_ok()
 }
 
-fn main() -> Result<()> {
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> Result<()> {
     fmt()
         .with_env_filter(EnvFilter::from_default_env())
         .with_target(false)
         .with_writer(std::io::stderr)
         .init();
+
+    let (connection, handle, _) = rtnetlink::new_connection()?;
+    tokio::spawn(connection);
+
+    async fn create_veth(base_name: impl AsRef<str>, handle: &rtnetlink::Handle) -> Result<()> {
+        
+
+        let base_name = base_name.as_ref();
+        let peer_name = format!("{base_name}-peer");
+
+        handle
+            .link()
+            .add()
+            .veth(base_name.to_string(), peer_name)
+            .execute()
+            .await?;
+
+        Ok(())
+    }
+
+    async fn dump_links(handle: &rtnetlink::Handle) -> Result<HashSet<String>> {
+        use futures_util::TryStreamExt;
+        let links = handle.link().get().execute();
+
+        let ifaces: HashSet<_> = links
+            .into_stream()
+            .filter_map(|link| async {
+                let name = link
+                    .ok()?
+                    .attributes
+                    .into_iter()
+                    .find_map(|attr| match attr {
+                        netlink_packet_route::link::LinkAttribute::IfName(name) => Some(name),
+                        _ => None,
+                    })?;
+                Some(name)
+            })
+            .collect()
+            .await;
+        Ok(ifaces)
+    }
+
+    let ifaces = dump_links(&handle).await?;
+    let Some(available_id) = (0..999).find(|id| !ifaces.contains(&format!("veth-{id}"))) else {
+        anyhow::bail!("No available veth interface id");
+    };
+
+    create_veth(format!("veth-{available_id}"), &handle).await?;
+
+    return Ok(());
+
     if is_container() {
         initialize_container()
     } else {
