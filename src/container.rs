@@ -1,18 +1,14 @@
 use anyhow::{Context, Result};
-use derive_more::derive::Deref;
 
 use std::{
     ffi::OsStr,
-    os::unix::{fs::PermissionsExt, process::CommandExt},
+    os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
-    process::Command,
-    str::FromStr,
 };
 
 use crate::{
-    nix_helpers::Nixpkgs,
-    tools::UTIL_COMPONENT,
-    unix_helpers::{bind_mount, unmount},
+    command_wrappers::{bind_mount, unmount},
+    tools::UNSHARE,
 };
 
 #[derive(Debug)]
@@ -20,6 +16,7 @@ pub struct Container {
     root: PathBuf,
     mounts: Vec<PathBuf>,
     keep: bool,
+    netns: bool,
 }
 
 impl Container {
@@ -29,6 +26,7 @@ impl Container {
             root,
             mounts: Vec::new(),
             keep: false,
+            netns: false,
         })
     }
 
@@ -65,27 +63,44 @@ impl Container {
         &self.root
     }
 
+    pub fn set_netns(&mut self, netns: bool) {
+        self.netns = netns;
+    }
+
     pub fn spawn(
         &self,
         command: impl AsRef<OsStr>,
         args: impl IntoIterator<Item = impl AsRef<OsStr>>,
+        path: impl AsRef<OsStr>,
     ) -> Result<impl ContainerHandle> {
         std::fs::create_dir_all(self.root().join("proc")).context("Creating proc directory")?;
 
-        let mut unshare = std::process::Command::new(UTIL_COMPONENT.join("bin").join("unshare"));
+        let mut unshare = std::process::Command::new(&*UNSHARE);
         unshare.arg("--root");
         unshare.arg(self.root());
         unshare.arg("--fork");
         unshare.arg("-m");
         unshare.arg("-p");
+        if self.netns {
+            unshare.arg("-n");
+        }
         unshare.arg("--mount-proc=/proc");
         unshare.arg(command.as_ref());
         unshare.args(args);
         unshare.env_clear();
         unshare.env("CONTAINIX_CONTAINER", "1");
+        unshare.env("PATH", path.as_ref());
+        if let Ok(log) = std::env::var("RUST_LOG") {
+            unshare.env("RUST_LOG", log);
+        }
         unshare.stdout(std::process::Stdio::inherit());
         unshare.stderr(std::process::Stdio::inherit());
         unshare.stdin(std::process::Stdio::inherit());
+        tracing::trace!(
+            "Running {} {:?}",
+            unshare.get_program().to_string_lossy(),
+            unshare.get_args().collect::<Vec<_>>()
+        );
         let child = unshare.spawn()?;
         Ok(child)
     }
@@ -102,10 +117,14 @@ fn copy_containix(root: impl AsRef<Path>) -> Result<()> {
 }
 
 pub trait ContainerHandle {
+    fn pid(&self) -> u32;
     fn wait(&mut self) -> Result<u32>;
 }
 
 impl ContainerHandle for std::process::Child {
+    fn pid(&self) -> u32 {
+        std::process::Child::id(self)
+    }
     fn wait(&mut self) -> Result<u32> {
         Ok(std::process::Child::wait(self)?
             .code()

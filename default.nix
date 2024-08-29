@@ -1,8 +1,9 @@
 {
   pkgs ? import <nixpkgs> { },
-  fenix ? pkgs.callPackage (import (
-    fetchTarball "https://github.com/nix-community/fenix/archive/main.tar.gz"
-  )) { },
+  fenix ? pkgs.callPackage (import (fetchTarball {
+    url = "https://github.com/nix-community/fenix/archive/main.tar.gz";
+    sha256 = "sha256:1cm2qa2w5rp3y90rwryqy0iqlm3j9dx8wqva0cdhjlqk2ykhc00a";
+  })) { },
   system ? builtins.currentSystem,
 }:
 let

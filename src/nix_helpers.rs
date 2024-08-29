@@ -91,6 +91,11 @@ impl NixComponent {
                 .into(),
         ))
     }
+
+    pub fn from_component_name(name: impl AsRef<str>) -> Self {
+        let name = name.as_ref();
+        NixComponent::Nixpkgs(name.to_string())
+    }
 }
 
 impl FromStr for NixComponent {
