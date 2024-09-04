@@ -1,8 +1,14 @@
 use anyhow::{Context, Result};
 use derive_more::derive::From;
+use enum_as_inner::EnumAsInner;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::HashSet, ffi::OsStr, fmt::Display, path::PathBuf, process::Command, str::FromStr,
+    collections::{HashMap, HashSet},
+    ffi::OsStr,
+    fmt::Display,
+    path::{Component, Path, PathBuf},
+    process::Command,
+    str::FromStr,
 };
 
 use crate::command::run_command;
@@ -19,39 +25,12 @@ impl NixStoreItem {
         path.push(&self.0);
         path
     }
-}
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, enum_as_inner::EnumAsInner)]
-#[serde(tag = "type")]
-pub enum NixComponent {
-    Store(NixStoreItem),
-    Nixpkgs(String),
-}
-
-impl NixComponent {
-    pub fn realise(self, nixpkgs: &Nixpkgs) -> Result<Self> {
-        match self {
-            NixComponent::Nixpkgs(component) => {
-                Ok(NixComponent::from_path(nixpkgs.realise(component)?)?)
-            }
-            path => Ok(path),
-        }
-    }
-
-    pub fn store_path(&self) -> Result<PathBuf> {
-        match self {
-            NixComponent::Store(component) => Ok(component.as_path()),
-            NixComponent::Nixpkgs(component) => {
-                anyhow::bail!("Can’t provide path for unbuilt Nixpkgs component {component}")
-            }
-        }
-    }
-
-    pub fn closure(&self) -> Result<HashSet<NixComponent>> {
+    pub fn closure(&self) -> Result<HashSet<NixStoreItem>> {
         tracing::trace!("Getting closure for {self:?}");
         let output = Command::new("nix-store")
             .args(["--query", "--requisites"])
-            .arg(self.store_path()?)
+            .arg(self.as_path())
             .output()
             .context("Running nix-store query for closure")?;
 
@@ -64,139 +43,154 @@ impl NixComponent {
 
         let closure = String::from_utf8(output.stdout)?
             .lines()
-            .map(NixComponent::from_path)
+            .map(|p| PathBuf::from(p).try_into())
             .collect::<Result<_>>()
             .context("Parsing nix-store output")?;
 
         Ok(closure)
     }
+}
 
-    pub fn from_path(path: impl AsRef<OsStr>) -> Result<Self> {
-        use std::path::Component;
-        let path = PathBuf::from(path.as_ref());
-        let parts: Vec<_> = path.components().collect();
-        let component = match parts.as_slice() {
-            &[Component::RootDir, Component::Normal(nix), Component::Normal(store), Component::Normal(component), ..]
-                if nix == "nix" && store == "store" =>
+impl TryFrom<PathBuf> for NixStoreItem {
+    type Error = anyhow::Error;
+
+    fn try_from(value: PathBuf) -> Result<Self> {
+        value.as_path().try_into()
+    }
+}
+
+impl TryFrom<&Path> for NixStoreItem {
+    type Error = anyhow::Error;
+
+    fn try_from(value: &Path) -> Result<Self> {
+        let components: Vec<_> = value.components().collect();
+        let component = match components.as_slice() {
+            &[Component::RootDir, Component::Normal(p1), Component::Normal(p2), Component::Normal(component)]
+                if p1 == "nix" && p2 == "store" =>
             {
                 component
             }
-            _ => anyhow::bail!("Path {} is not in the nix store", path.display()),
+            _ => anyhow::bail!("Path {} is not in the nix store", value.display()),
         };
-        Ok(NixComponent::Store(
-            component
-                .to_str()
-                .ok_or_else(|| anyhow::anyhow!("Nix component contains non-utf8 characters"))?
-                .to_string()
-                .into(),
-        ))
-    }
-
-    pub fn from_component_name(name: impl AsRef<str>) -> Self {
-        let name = name.as_ref();
-        NixComponent::Nixpkgs(name.to_string())
+        let component = component
+            .to_str()
+            .ok_or_else(|| anyhow::anyhow!("Nix component contains non-utf8 characters"))?;
+        Ok(NixStoreItem(component.to_string()))
     }
 }
 
-impl FromStr for NixComponent {
-    type Err = anyhow::Error;
-
-    fn from_str(s: &str) -> Result<Self> {
-        if s.starts_with("/") {
-            NixComponent::from_path(s)
-        } else {
-            Ok(NixComponent::Nixpkgs(s.to_string()))
-        }
-    }
+#[derive(Debug, Clone, EnumAsInner)]
+pub enum NixBuild {
+    LocalFile(PathBuf),
+    // FlakePath(PathBuf),
+    FlakeExpression {
+        installable: String,
+        includes: Option<HashMap<String, String>>,
+    },
 }
 
-#[derive(Debug, Clone)]
-pub enum Nixpkgs {
-    LocalChannel(Option<String>),
-    Tarball { url: url::Url, hash: Option<String> },
-}
-
-impl Display for Nixpkgs {
+impl Display for NixBuild {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Nixpkgs::LocalChannel(_) => write!(f, "{}", self.pkg_expression()),
-            Nixpkgs::Tarball { url, .. } => write!(f, "<{}>", url),
+            NixBuild::LocalFile(path) => write!(f, "{}", path.to_string_lossy()),
+            NixBuild::FlakeExpression { installable, .. } => write!(f, "{}", installable),
         }
     }
 }
 
-impl FromStr for Nixpkgs {
+impl FromStr for NixBuild {
     type Err = anyhow::Error;
 
     fn from_str(s: &str) -> Result<Self> {
-        if s.starts_with("<") && s.ends_with(">") {
-            Ok(Nixpkgs::LocalChannel(Some(s[1..s.len() - 1].to_string())))
-        } else if s.starts_with("http://") || s.starts_with("https://") {
-            let url = url::Url::parse(s)?;
-            let hash = url
-                .query_pairs()
-                .find(|(key, _)| key == "sha256")
-                .map(|(_, value)| value.to_string());
-
-            Ok(Nixpkgs::Tarball { url, hash })
+        if s.ends_with(".nix") && !s.ends_with("flake.nix") {
+            Ok(NixBuild::LocalFile(PathBuf::from(s)))
         } else {
-            anyhow::bail!("Invalid Nixpkgs specification: {s}")
+            Ok(NixBuild::FlakeExpression {
+                installable: s.to_string(),
+                includes: None,
+            })
         }
     }
 }
 
-impl Nixpkgs {
-    pub fn import_expression(&self) -> String {
-        format!(r#"import ({}) {{}}"#, self.pkg_expression())
-    }
-
-    pub fn pkg_expression(&self) -> String {
+impl NixBuild {
+    pub fn build(&self) -> Result<NixStoreItem> {
         match self {
-            Nixpkgs::LocalChannel(channel) => {
-                format!(
-                    "<{}>",
-                    channel.as_ref().map(|c| c.as_str()).unwrap_or("nixpkgs")
-                )
-            }
-            Nixpkgs::Tarball { url, hash } if hash.is_some() => {
-                format!(
-                    r#"
-                        builtins.fetchTarball {{
-                            url = "{url}";
-                            sha256 = "{hash}";
-                        }}
-                    "#,
-                    hash = hash.as_ref().expect("Guaranteed by match arm guard")
-                )
-            }
-            Nixpkgs::Tarball { url, .. } => {
-                format!(r#"builtins.fetchTarball "{url}""#,)
-            }
+            NixBuild::LocalFile(path) => build_nix_file(path),
+            // NixBuild::FlakePath(path) => NixComponent::from_path(path),
+            NixBuild::FlakeExpression {
+                includes,
+                installable,
+            } => build_nix_flake(installable, includes.as_ref()),
         }
     }
 
-    pub fn realise(&self, component_name: impl AsRef<str>) -> Result<PathBuf> {
-        let component_name = component_name.as_ref();
-        tracing::trace!("Realising `{component_name}` from {self}");
-
-        let mut command = Command::new("nix-build");
-        command
-            .arg("-E")
-            .arg(self.import_expression())
-            .arg("-A")
-            .arg(component_name)
-            .arg("-Q")
-            .arg("--no-out-link");
-
-        let output = run_command(command).context("Running nix-build")?;
-        let path = PathBuf::from(String::from_utf8(output.stdout)?.trim());
-        Ok(path)
+    pub fn nixpkg_component(component_name: impl AsRef<str>, nixpkgs: impl AsRef<str>) -> Self {
+        NixBuild::FlakeExpression {
+            installable: format!("nixpkgs#{}", component_name.as_ref()),
+            includes: Some([("nixpkgs".to_string(), nixpkgs.as_ref().to_string())].into()),
+        }
     }
 }
 
-pub fn combine_closures(
-    exposed_components: impl IntoIterator<Item = NixComponent>,
-) -> Result<HashSet<NixComponent>> {
+pub fn build_nix_file(nix_file_path: impl AsRef<Path>) -> Result<NixStoreItem> {
+    let nix_file_path = nix_file_path.as_ref();
+    tracing::trace!("Building nix file {}", nix_file_path.display());
+
+    let mut command = Command::new("nix-build");
+    command.arg(nix_file_path).arg("-Q").arg("--no-out-link");
+
+    let output = run_command(command).context("Running nix-build")?;
+    let path = PathBuf::from(String::from_utf8(output.stdout)?.trim());
+    Ok(path.try_into()?)
+}
+
+// [{"drvPath":"/nix/store/dyvxc26k9h602ad6d272b9a6n70vpn0k-ps-adv_cmds-119.drv","outputs":{"out":"/nix/store/a4pw6inaxbfry54v3dl5m152442fg4dr-ps-adv_cmds-119"}}]
+
+#[derive(Debug, Deserialize)]
+struct NixFlakeBuildOutput {
+    #[serde(rename = "drvPath")]
+    drv_path: PathBuf,
+    outputs: HashMap<String, PathBuf>,
+}
+
+pub fn build_nix_flake(
+    flake_url: impl AsRef<str>,
+    includes: Option<&HashMap<String, String>>,
+) -> Result<NixStoreItem> {
+    let flake_url = flake_url.as_ref();
+    tracing::trace!("Building nix flake {}", flake_url);
+
+    let mut command = Command::new("nix");
+    command
+        .arg("build")
+        .arg(flake_url)
+        .arg("--json")
+        .arg("--quiet")
+        .arg("--no-link");
+    if let Some(includes) = includes {
+        for (name, value) in includes {
+            command.arg("-I").arg(format!("{name}={value}"));
+        }
+    }
+
+    let output = run_command(command).context("Running nix-build")?;
+    let output: Vec<NixFlakeBuildOutput> =
+        serde_json::from_str(&String::from_utf8(output.stdout)?)?;
+    let output = output.get(0).context("No output items from nix build")?;
+
+    Ok(output
+        .outputs
+        .get("bin")
+        .or_else(|| output.outputs.get("out"))
+        .context("No suitable output in nix build")?
+        .as_path()
+        .try_into()?)
+}
+
+pub fn combine_closures<'a>(
+    exposed_components: impl IntoIterator<Item = &'a NixStoreItem>,
+) -> Result<HashSet<NixStoreItem>> {
     let mut closure = HashSet::new();
     for component in exposed_components {
         closure.extend(component.closure()?);

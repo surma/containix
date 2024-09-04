@@ -1,5 +1,6 @@
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
+    convert::Infallible,
     ffi::{OsStr, OsString},
     net::Ipv4Addr,
     path::PathBuf,
@@ -10,7 +11,7 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use command_wrappers::Interface;
 use container::ContainerHandle;
-use nix_helpers::{combine_closures, NixComponent, NixStoreItem, Nixpkgs};
+use nix_helpers::{combine_closures, NixBuild, NixStoreItem};
 use serde::{Deserialize, Serialize};
 use tools::{is_container, NIXPKGS_24_05};
 use tracing::info_span;
@@ -30,25 +31,33 @@ struct CliArgs {
     #[arg(short = 'v', long = "volume", value_name = "HOST PATH:CONTAINER PATH")]
     volumes: Vec<VolumeMount>,
 
-    /// Additional nix components to bind mount into the container.
-    #[arg(short = 'e', long = "expose", value_name = "NIX STORE PATH")]
-    exposed_components: Vec<NixComponent>,
+    /// Nix files that should be built and made available to the container.
+    #[arg(short = 'b', long = "build", value_name = "NIX (FLAKE) FILE")]
+    builds: Vec<NixBuild>,
+
+    /// Nixpkgs expression to use for packages.
+    #[arg(
+        long,
+        value_name = "NIXPKG SOURCE",
+        default_value = NIXPKGS_24_05
+    )]
+    nixpkgs: String,
+
+    /// Additional nix packages to bind mount into the container.
+    #[arg(short = 'p', long = "package", value_name = "NIXPKG PACKAGE NAME")]
+    packages: Vec<String>,
 
     /// Network configuration for the container.
-    #[arg(short = 'n', long = "network", value_name = "HOST!CONTAINER/NETMASK")]
+    #[arg(
+        short = 'n',
+        long = "network",
+        value_name = "HOST_IP!CONTAINER_IP/NETMASK"
+    )]
     network: Option<NetworkConfig>,
 
     /// Working directory inside the container.
     #[arg(short, long, value_name = "PATH", default_value = "/")]
     workdir: PathBuf,
-
-    /// Nixpkgs version to use.
-    #[arg(
-        long,
-        value_name = "NIXPKGS",
-        default_value = NIXPKGS_24_05
-    )]
-    nixpkgs: Nixpkgs,
 
     /// Keep the container root directory after the command has run.
     #[arg(short = 'k', long = "keep")]
@@ -129,13 +138,8 @@ pub struct InterfaceConfig {
 fn create_container() -> Result<()> {
     tracing::info!("Starting containix");
     let args = CliArgs::parse();
-    tracing::info!("Realising components");
-    let exposed_components = args
-        .exposed_components
-        .iter()
-        .chain(&[NixComponent::from_component_name("iproute2")])
-        .map(|c| c.clone().realise(&args.nixpkgs))
-        .collect::<Result<HashSet<_>>>()?;
+    let store_items = build_inputs(&args)?;
+    let closure = combine_closures(&store_items)?;
 
     let mut container = container::Container::temp_container()?;
     container.set_keep(args.keep_container);
@@ -143,25 +147,14 @@ fn create_container() -> Result<()> {
 
     let mut config = ContainerConfig {
         command: args.command,
-        exposed_components: exposed_components
-            .iter()
-            .map(|c| {
-                c.as_store()
-                    .expect("Guaranteed by NixComponent::realise()")
-                    .clone()
-            })
-            .collect(),
+        exposed_components: store_items,
         workdir: args.workdir,
         ..Default::default()
     };
 
-    let closure = combine_closures(exposed_components.clone())?
-        .into_iter()
-        .map(|c| c.store_path())
-        .collect::<Result<Vec<_>, _>>()?;
     tracing::info!("Mounting components");
     for component in &closure {
-        container.bind_mount(component, component, true)?;
+        container.bind_mount(component.as_path(), component.as_path(), true)?;
     }
     tracing::info!("Mounting volumes");
     for volume in &args.volumes {
@@ -201,6 +194,29 @@ fn create_container() -> Result<()> {
         .context("Waiting for container to exit")?;
 
     Ok(())
+}
+
+fn build_inputs(args: &CliArgs) -> Result<Vec<NixStoreItem>> {
+    tracing::info!("Assembling & building inputs");
+    let build_inputs: Vec<NixBuild> = args
+        .packages
+        .iter()
+        .map(|p| NixBuild::FlakeExpression {
+            installable: format!("nixpkgs#{p}"),
+            includes: Some([("nixpkgs".to_string(), args.nixpkgs.clone())].into()),
+        })
+        .chain(args.builds.clone().into_iter())
+        .collect();
+    tracing::trace!("Flakes to build: {build_inputs:?}");
+    let store_items = build_inputs
+        .into_iter()
+        .map(|flake| {
+            tracing::info!("Building input flake: {}", flake);
+            flake.build().context("Building input flake")
+        })
+        .collect::<Result<Vec<_>>>()?;
+    tracing::trace!("Flakes built: {store_items:?}");
+    Ok(store_items)
 }
 
 fn setup_network(network: &NetworkConfig) -> Result<(Interface, Interface)> {
@@ -248,7 +264,7 @@ fn build_path_env(config: &ContainerConfig) -> OsString {
         .iter()
         .map(|c| c.as_path().join("bin").as_os_str().to_os_string())
         .collect();
-    
+
     component_paths.join(&OsString::from(":"))
 }
 
