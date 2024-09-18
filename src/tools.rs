@@ -1,4 +1,4 @@
-use crate::nix_helpers::NixBuild;
+use crate::nix_helpers::NixDerivation;
 use std::ffi::OsString;
 use std::{str::FromStr, sync::LazyLock};
 
@@ -6,7 +6,7 @@ pub fn is_container() -> bool {
     std::env::var("CONTAINIX_CONTAINER").is_ok()
 }
 
-pub const NIXPKGS_24_05: &str = "git+https://github.com/nixos/nixpkgs?tag=24.05";
+pub const NIXPKGS_24_05: &str = "github:nixos/nixpkgs/24.05";
 
 macro_rules! tool {
     ($name:ident, $component:expr, $bin:literal) => {
@@ -14,7 +14,7 @@ macro_rules! tool {
             let cmd = if is_container() {
                 $bin.into()
             } else {
-                NixBuild::nixpkg_component($component, NIXPKGS_24_05)
+                NixDerivation::package_from_flake($component, NIXPKGS_24_05)
                     .build()
                     .expect("Nixpkgs must provide $component")
                     .as_path()

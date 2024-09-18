@@ -80,56 +80,44 @@ impl TryFrom<&Path> for NixStoreItem {
 }
 
 #[derive(Debug, Clone, EnumAsInner)]
-pub enum NixBuild {
+pub enum NixDerivation {
     LocalFile(PathBuf),
-    // FlakePath(PathBuf),
-    FlakeExpression {
-        installable: String,
-        includes: Option<HashMap<String, String>>,
-    },
+    FlakeExpression(String),
 }
 
-impl Display for NixBuild {
+impl Display for NixDerivation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            NixBuild::LocalFile(path) => write!(f, "{}", path.to_string_lossy()),
-            NixBuild::FlakeExpression { installable, .. } => write!(f, "{}", installable),
+            NixDerivation::LocalFile(path) => write!(f, "{}", path.to_string_lossy()),
+            NixDerivation::FlakeExpression(expr) => write!(f, "{}", expr),
         }
     }
 }
 
-impl FromStr for NixBuild {
+impl FromStr for NixDerivation {
     type Err = anyhow::Error;
 
     fn from_str(s: &str) -> Result<Self> {
         if s.ends_with(".nix") && !s.ends_with("flake.nix") {
-            Ok(NixBuild::LocalFile(PathBuf::from(s)))
+            Ok(NixDerivation::LocalFile(PathBuf::from(s)))
         } else {
-            Ok(NixBuild::FlakeExpression {
-                installable: s.to_string(),
-                includes: None,
-            })
+            // TODO: Validate that the flake expression is valid
+            Ok(NixDerivation::FlakeExpression(s.to_string()))
         }
     }
 }
 
-impl NixBuild {
+impl NixDerivation {
     pub fn build(&self) -> Result<NixStoreItem> {
         match self {
-            NixBuild::LocalFile(path) => build_nix_file(path),
+            NixDerivation::LocalFile(path) => build_nix_file(path),
             // NixBuild::FlakePath(path) => NixComponent::from_path(path),
-            NixBuild::FlakeExpression {
-                includes,
-                installable,
-            } => build_nix_flake(installable, includes.as_ref()),
+            NixDerivation::FlakeExpression(installable) => build_nix_flake(installable),
         }
     }
 
-    pub fn nixpkg_component(component_name: impl AsRef<str>, nixpkgs: impl AsRef<str>) -> Self {
-        NixBuild::FlakeExpression {
-            installable: format!("nixpkgs#{}", component_name.as_ref()),
-            includes: Some([("nixpkgs".to_string(), nixpkgs.as_ref().to_string())].into()),
-        }
+    pub fn package_from_flake(component_name: impl AsRef<str>, flake: impl AsRef<str>) -> Self {
+        NixDerivation::FlakeExpression(format!("{}#{}", flake.as_ref(), component_name.as_ref()))
     }
 }
 
@@ -145,8 +133,6 @@ pub fn build_nix_file(nix_file_path: impl AsRef<Path>) -> Result<NixStoreItem> {
     Ok(path.try_into()?)
 }
 
-// [{"drvPath":"/nix/store/dyvxc26k9h602ad6d272b9a6n70vpn0k-ps-adv_cmds-119.drv","outputs":{"out":"/nix/store/a4pw6inaxbfry54v3dl5m152442fg4dr-ps-adv_cmds-119"}}]
-
 #[derive(Debug, Deserialize)]
 struct NixFlakeBuildOutput {
     #[serde(rename = "drvPath")]
@@ -154,25 +140,17 @@ struct NixFlakeBuildOutput {
     outputs: HashMap<String, PathBuf>,
 }
 
-pub fn build_nix_flake(
-    flake_url: impl AsRef<str>,
-    includes: Option<&HashMap<String, String>>,
-) -> Result<NixStoreItem> {
-    let flake_url = flake_url.as_ref();
-    tracing::trace!("Building nix flake {}", flake_url);
+pub fn build_nix_flake(flake_expression: impl AsRef<str>) -> Result<NixStoreItem> {
+    let flake_expression = flake_expression.as_ref();
+    tracing::trace!("Building nix flake {}", flake_expression);
 
     let mut command = Command::new("nix");
     command
         .arg("build")
-        .arg(flake_url)
+        .arg(flake_expression)
         .arg("--json")
         .arg("--quiet")
         .arg("--no-link");
-    if let Some(includes) = includes {
-        for (name, value) in includes {
-            command.arg("-I").arg(format!("{name}={value}"));
-        }
-    }
 
     let output = run_command(command).context("Running nix-build")?;
     let output: Vec<NixFlakeBuildOutput> =

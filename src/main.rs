@@ -8,10 +8,10 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use clap::Parser;
+use clap::{ArgGroup, Parser};
 use command_wrappers::Interface;
 use container::ContainerHandle;
-use nix_helpers::{combine_closures, NixBuild, NixStoreItem};
+use nix_helpers::{combine_closures, NixDerivation, NixStoreItem};
 use serde::{Deserialize, Serialize};
 use tools::{is_container, NIXPKGS_24_05};
 use tracing::info_span;
@@ -21,31 +21,28 @@ mod command;
 mod command_wrappers;
 mod container;
 mod init;
+mod network_config;
 mod nix_helpers;
 mod tools;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct CliArgs {
-    /// Volumes to mount into the container.
-    #[arg(short = 'v', long = "volume", value_name = "HOST PATH:CONTAINER PATH")]
-    volumes: Vec<VolumeMount>,
-
-    /// Nix files that should be built and made available to the container.
+    /// Nix derivations that should be built and made available to the container.
     #[arg(short = 'b', long = "build", value_name = "NIX (FLAKE) FILE")]
-    builds: Vec<NixBuild>,
+    expose: Vec<NixDerivation>,
 
-    /// Nixpkgs expression to use for packages.
-    #[arg(
-        long,
-        value_name = "NIXPKG SOURCE",
-        default_value = NIXPKGS_24_05
-    )]
-    nixpkgs: String,
-
-    /// Additional nix packages to bind mount into the container.
+    /// Convenience flag to expose packages from nixpkgs to the container
     #[arg(short = 'p', long = "package", value_name = "NIXPKG PACKAGE NAME")]
     packages: Vec<String>,
+
+    /// The command to run in the container.
+    #[arg(trailing_var_arg = true)]
+    command: Vec<String>,
+
+    /// Volumes to mount into the container.
+    #[arg(short = 'v', long = "volume", value_name = "HOST_PATH:CONTAINER_PATH")]
+    volumes: Vec<VolumeMount>,
 
     /// Network configuration for the container.
     #[arg(
@@ -53,7 +50,7 @@ struct CliArgs {
         long = "network",
         value_name = "HOST_IP!CONTAINER_IP/NETMASK"
     )]
-    network: Option<NetworkConfig>,
+    network: Option<network_config::NetworkConfig>,
 
     /// Working directory inside the container.
     #[arg(short, long, value_name = "PATH", default_value = "/")]
@@ -63,9 +60,24 @@ struct CliArgs {
     #[arg(short = 'k', long = "keep")]
     keep_container: bool,
 
-    /// The command to run in the container.
-    #[arg(trailing_var_arg = true)]
-    command: Vec<String>,
+    #[command(flatten)]
+    #[command(next_help_heading = "Dangerous Flags")]
+    dangerous_flags: DangerousFlags,
+}
+
+#[derive(Debug, Parser)]
+struct DangerousFlags {
+    /// Overwrite the flake expression used for nixpkgs packages.
+    #[arg(
+            long,
+            value_name = "NIXPKG SOURCE",
+            default_value = NIXPKGS_24_05,
+        )]
+    nixpkgs: String,
+
+    /// Do not expose any tools by default (you must provide your own).
+    #[arg(long, default_value_t = false)]
+    no_default_expose: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -85,36 +97,6 @@ impl FromStr for VolumeMount {
         Ok(VolumeMount {
             host_path: host_path.into(),
             container_path: container_path.into(),
-        })
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct NetworkConfig {
-    pub host_address: Ipv4Addr,
-    pub container_address: Ipv4Addr,
-    pub netmask: Ipv4Addr,
-}
-
-impl FromStr for NetworkConfig {
-    type Err = anyhow::Error;
-    fn from_str(s: &str) -> Result<Self> {
-        let Some((addresses, netmask)) = s.split_once('/') else {
-            anyhow::bail!("Network config must be of the form <HOST_ADDRESS>!<CONTAINER_ADDRESS>/<NETMASK>, got: {s}");
-        };
-        let Some((host, container)) = addresses.split_once('!') else {
-            anyhow::bail!("Network config must be of the form <HOST_ADDRESS>!<CONTAINER_ADDRESS>/<NETMASK>, got: {s}");
-        };
-        let netmask = if netmask.contains('.') {
-            netmask.parse()?
-        } else {
-            let netmask = netmask.parse::<u32>()?;
-            Ipv4Addr::from_bits(!((1 << (32 - netmask)) - 1))
-        };
-        Ok(NetworkConfig {
-            host_address: host.parse()?,
-            container_address: container.parse()?,
-            netmask,
         })
     }
 }
@@ -198,14 +180,11 @@ fn create_container() -> Result<()> {
 
 fn build_inputs(args: &CliArgs) -> Result<Vec<NixStoreItem>> {
     tracing::info!("Assembling & building inputs");
-    let build_inputs: Vec<NixBuild> = args
+    let build_inputs: Vec<NixDerivation> = args
         .packages
         .iter()
-        .map(|p| NixBuild::FlakeExpression {
-            installable: format!("nixpkgs#{p}"),
-            includes: Some([("nixpkgs".to_string(), args.nixpkgs.clone())].into()),
-        })
-        .chain(args.builds.clone().into_iter())
+        .map(|p| NixDerivation::package_from_flake(p, &args.dangerous_flags.nixpkgs))
+        .chain(args.expose.clone().into_iter())
         .collect();
     tracing::trace!("Flakes to build: {build_inputs:?}");
     let store_items = build_inputs
@@ -219,7 +198,7 @@ fn build_inputs(args: &CliArgs) -> Result<Vec<NixStoreItem>> {
     Ok(store_items)
 }
 
-fn setup_network(network: &NetworkConfig) -> Result<(Interface, Interface)> {
+fn setup_network(network: &network_config::NetworkConfig) -> Result<(Interface, Interface)> {
     tracing::info!("Configuring network");
     let available_interface_name =
         find_available_veth_name().context("Finding available veth interface")?;
