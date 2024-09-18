@@ -1,8 +1,4 @@
-use std::{
-    os::unix::process::CommandExt,
-    process::Command,
-    time::Duration,
-};
+use std::{os::unix::process::CommandExt, process::Command, time::Duration};
 
 use anyhow::{Context, Result};
 

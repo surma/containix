@@ -1,15 +1,18 @@
 use anyhow::{Context, Result};
 
 use std::{
-    ffi::OsStr,
+    ffi::{OsStr, OsString},
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
+    sync::LazyLock,
 };
 
 use crate::{
     command_wrappers::{bind_mount, unmount},
-    tools::UNSHARE,
+    tools::TOOLS,
 };
+
+static UNSHARE: LazyLock<OsString> = LazyLock::new(|| TOOLS.get("unshare").unwrap().path.clone());
 
 #[derive(Debug)]
 pub struct Container {

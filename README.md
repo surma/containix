@@ -13,12 +13,14 @@ Containix is a lightweight approach to containers by relying on Nix and the Nix 
 ## Installation
 
 1. Clone the repository:
+
    ```console
    $ git clone https://github.com/surma/containix
    $ cd containix
    ```
 
 2. Build the project:
+
    ```console
    $ nix build .
    ```
@@ -32,5 +34,5 @@ Containix is a lightweight approach to containers by relying on Nix and the Nix 
 ## Usage
 
 ```console
-$ containix create-container --volume $HOME:/root --expose bash --expose coreutils bash
+$ containix create-container --volume $HOME:/root --package bash --package coreutils bash
 ```

@@ -3,16 +3,16 @@ use derive_more::derive::Deref;
 use enum_as_inner::EnumAsInner;
 use serde::Deserialize;
 use std::{
+    ffi::OsString,
     net::{Ipv4Addr, Ipv6Addr},
     path::Path,
+    sync::LazyLock,
 };
 
-use crate::{
-    command::run_command,
-    tools::{IP, MOUNT, UMOUNT},
-};
+use crate::{command::run_command, tools::TOOLS};
 
 pub fn bind_mount(src: impl AsRef<Path>, dst: impl AsRef<Path>, read_only: bool) -> Result<()> {
+    static MOUNT: LazyLock<OsString> = LazyLock::new(|| TOOLS.get("mount").unwrap().path.clone());
     let src = src.as_ref();
     let dst = dst.as_ref();
 
@@ -31,6 +31,7 @@ pub fn bind_mount(src: impl AsRef<Path>, dst: impl AsRef<Path>, read_only: bool)
 }
 
 pub fn unmount(path: impl AsRef<Path>) -> Result<()> {
+    static UMOUNT: LazyLock<OsString> = LazyLock::new(|| TOOLS.get("umount").unwrap().path.clone());
     let path = path.as_ref();
     let mut command = std::process::Command::new(&*UMOUNT);
     command.arg(path);
@@ -75,6 +76,8 @@ pub struct Ipv6Address {
     pub prefixlen: u32,
     pub broadcast: Option<Ipv6Addr>,
 }
+
+static IP: LazyLock<OsString> = LazyLock::new(|| TOOLS.get("ip").unwrap().path.clone());
 
 impl Interface {
     pub fn index(&self) -> u32 {
