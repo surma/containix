@@ -13,7 +13,7 @@ use command_wrappers::Interface;
 use container::ContainerHandle;
 use nix_helpers::{combine_closures, NixDerivation, NixStoreItem};
 use serde::{Deserialize, Serialize};
-use tools::{is_container, NIXPKGS_24_05};
+use tools::{is_container, NIXPKGS, TOOLS};
 use tracing::info_span;
 use tracing_subscriber::{fmt, EnvFilter};
 
@@ -28,13 +28,13 @@ mod tools;
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct CliArgs {
-    /// Nix derivations that should be built and made available to the container.
-    #[arg(short = 'b', long = "build", value_name = "NIX (FLAKE) FILE")]
-    expose: Vec<NixDerivation>,
+    /// Nix flake expression that should be built and made available to the container.
+    #[arg(short = 'f', long = "flake", value_name = "NIX (FLAKE) FILE")]
+    flake: Vec<NixDerivation>,
 
-    /// Convenience flag to expose packages from nixpkgs to the container
+    /// Expose a packages from nixpkgs to the container. (Equivalent to `-f github:nixos/nixpkgs/24.05#<package>`)
     #[arg(short = 'p', long = "package", value_name = "NIXPKG PACKAGE NAME")]
-    packages: Vec<String>,
+    package: Vec<String>,
 
     /// The command to run in the container.
     #[arg(trailing_var_arg = true)]
@@ -71,13 +71,13 @@ struct DangerousFlags {
     #[arg(
             long,
             value_name = "NIXPKG SOURCE",
-            default_value = NIXPKGS_24_05,
+            default_value = NIXPKGS,
         )]
     nixpkgs: String,
 
-    /// Do not expose any tools by default (you must provide your own).
+    /// Do not *any* tools by default (i.e. you must provide the ones that containix requires).
     #[arg(long, default_value_t = false)]
-    no_default_expose: bool,
+    no_minimal_expose: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -180,12 +180,19 @@ fn create_container() -> Result<()> {
 
 fn build_inputs(args: &CliArgs) -> Result<Vec<NixStoreItem>> {
     tracing::info!("Assembling & building inputs");
-    let build_inputs: Vec<NixDerivation> = args
-        .packages
+    let mut build_inputs: Vec<NixDerivation> = args
+        .package
         .iter()
         .map(|p| NixDerivation::package_from_flake(p, &args.dangerous_flags.nixpkgs))
-        .chain(args.expose.clone().into_iter())
         .collect();
+    build_inputs.extend(args.flake.clone());
+
+    if !args.dangerous_flags.no_minimal_expose {
+        build_inputs.extend(TOOLS.values().map(|tool| {
+            NixDerivation::package_from_flake(tool.component.clone(), &args.dangerous_flags.nixpkgs)
+        }));
+    }
+
     tracing::trace!("Flakes to build: {build_inputs:?}");
     let store_items = build_inputs
         .into_iter()
