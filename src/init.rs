@@ -34,13 +34,9 @@ pub fn initialize_container() -> Result<()> {
         interface.up()?;
     }
 
-    let Some(command) = config.command.first() else {
-        anyhow::bail!("No command to run");
-    };
-
-    let err = Command::new(command)
-        .args(&config.command[1..])
-        .current_dir(&config.workdir)
+    let err = Command::new(config.flake.path.join("bin").join(config.flake.name))
+        .args(config.args)
+        .current_dir("/")
         .stdin(std::process::Stdio::inherit())
         .stdout(std::process::Stdio::inherit())
         .stderr(std::process::Stdio::inherit())

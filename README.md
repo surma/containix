@@ -1,14 +1,12 @@
 # Containix
 
-Containix is a lightweight approach to containers by relying on Nix and the Nix store to handle the container's filesystem.
+Containix is a replacement(-ish) for Docker, using [Nix Flakes] as the container specification.
 
-## Features
+By running `containix -f /path/to/flake`, Containix will build the default package of the flake, determine the transitive closure of dependencies, and create a container with a read-only nix store with _only_ those dependencies. Then, similar to `nix run`, it will execute the binary with the same name as the default package’s derivation name.
 
-- Create ephemeral containers with specified Nix component
-- Automatic cleanup of ephemeral container resources
-- Mount volumes into containers
-- (TODO) Easy network interface configuration
-- (TODO) Port mapping
+Take a look at the [examples](./example/) to get started.
+
+> NB: If you use `--network`, Containix requires the `ip` tool from the `iproute2` package to be present inside the container.
 
 ## Installation
 
@@ -33,6 +31,14 @@ Containix is a lightweight approach to containers by relying on Nix and the Nix 
 
 ## Usage
 
+Run a flake inside a container:
+
 ```console
-$ containix create-container --volume $HOME:/root --package bash --package coreutils bash
+$ containix -f /path/to/flake
+```
+
+Mount a host directory into the container and create a subnet where 10.0.0.1 is the host and 10.0.0.2 is the container:
+
+```console
+$ containix -f /path/to/flake --volume $PWD:/workdir --network 10.0.0.1+10.0.0.2/8
 ```

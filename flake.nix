@@ -29,9 +29,11 @@
         pkgs = import nixpkgs { inherit system; };
       in
       {
-        packages.default = import ./default.nix {
-          inherit pkgs system;
-          fenix = fenix.packages.${system};
+        packages = {
+          default = import ./default.nix {
+            inherit pkgs system;
+            fenix = fenix.packages.${system};
+          };
         };
       }
     );

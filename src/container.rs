@@ -74,7 +74,7 @@ impl Container {
         &self,
         command: impl AsRef<OsStr>,
         args: impl IntoIterator<Item = impl AsRef<OsStr>>,
-        path: impl AsRef<OsStr>,
+        path_var: impl AsRef<OsStr>,
     ) -> Result<impl ContainerHandle> {
         std::fs::create_dir_all(self.root().join("proc")).context("Creating proc directory")?;
 
@@ -92,7 +92,7 @@ impl Container {
         unshare.args(args);
         unshare.env_clear();
         unshare.env("CONTAINIX_CONTAINER", "1");
-        unshare.env("PATH", path.as_ref());
+        unshare.env("PATH", path_var.as_ref());
         if let Ok(log) = std::env::var("RUST_LOG") {
             unshare.env("RUST_LOG", log);
         }

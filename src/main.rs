@@ -11,11 +11,12 @@ use anyhow::{Context, Result};
 use clap::{ArgGroup, Parser};
 use command_wrappers::Interface;
 use container::ContainerHandle;
-use nix_helpers::{combine_closures, NixDerivation, NixStoreItem};
+use nix_helpers::{NixDerivation, NixStoreItem};
 use serde::{Deserialize, Serialize};
 use tools::{is_container, NIXPKGS, TOOLS};
-use tracing::info_span;
+use tracing::{info_span, instrument};
 use tracing_subscriber::{fmt, EnvFilter};
+use volume_mount::VolumeMount;
 
 mod command;
 mod command_wrappers;
@@ -24,21 +25,18 @@ mod init;
 mod network_config;
 mod nix_helpers;
 mod tools;
+mod volume_mount;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct CliArgs {
-    /// Nix flake expression that should be built and made available to the container.
+    /// Nix flake container
     #[arg(short = 'f', long = "flake", value_name = "NIX (FLAKE) FILE")]
-    flake: Vec<NixDerivation>,
+    flake: NixDerivation,
 
-    /// Expose a packages from nixpkgs to the container. (Equivalent to `-f github:nixos/nixpkgs/24.05#<package>`)
-    #[arg(short = 'p', long = "package", value_name = "NIXPKG PACKAGE NAME")]
-    package: Vec<String>,
-
-    /// The command to run in the container.
+    /// Arguments to pass to the command.
     #[arg(trailing_var_arg = true)]
-    command: Vec<String>,
+    args: Vec<String>,
 
     /// Volumes to mount into the container.
     #[arg(short = 'v', long = "volume", value_name = "HOST_PATH:CONTAINER_PATH")]
@@ -48,65 +46,20 @@ struct CliArgs {
     #[arg(
         short = 'n',
         long = "network",
-        value_name = "HOST_IP!CONTAINER_IP/NETMASK"
+        value_name = "HOST_IP+CONTAINER_IP/NETMASK"
     )]
     network: Option<network_config::NetworkConfig>,
-
-    /// Working directory inside the container.
-    #[arg(short, long, value_name = "PATH", default_value = "/")]
-    workdir: PathBuf,
 
     /// Keep the container root directory after the command has run.
     #[arg(short = 'k', long = "keep")]
     keep_container: bool,
-
-    #[command(flatten)]
-    #[command(next_help_heading = "Dangerous Flags")]
-    dangerous_flags: DangerousFlags,
 }
 
-#[derive(Debug, Parser)]
-struct DangerousFlags {
-    /// Overwrite the flake expression used for nixpkgs packages.
-    #[arg(
-            long,
-            value_name = "NIXPKG SOURCE",
-            default_value = NIXPKGS,
-        )]
-    nixpkgs: String,
-
-    /// Do not *any* tools by default (i.e. you must provide the ones that containix requires).
-    #[arg(long, default_value_t = false)]
-    no_minimal_expose: bool,
-}
-
-#[derive(Debug, Clone)]
-struct VolumeMount {
-    host_path: PathBuf,
-    container_path: PathBuf,
-}
-
-impl FromStr for VolumeMount {
-    type Err = anyhow::Error;
-    fn from_str(s: &str) -> Result<Self> {
-        let Some((host_path, container_path)) = s.split_once(':') else {
-            anyhow::bail!(
-                "Volume mount must be of the form <HOST PATH>:<CONTAINER PATH>, got: {s}"
-            );
-        };
-        Ok(VolumeMount {
-            host_path: host_path.into(),
-            container_path: container_path.into(),
-        })
-    }
-}
-
-#[derive(Debug, Serialize, Deserialize, Default)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ContainerConfig {
-    pub command: Vec<String>,
-    pub exposed_components: Vec<NixStoreItem>,
-    pub workdir: PathBuf,
+    pub flake: NixStoreItem,
+    pub args: Vec<String>,
     pub interface: Option<InterfaceConfig>,
 }
 
@@ -120,18 +73,17 @@ pub struct InterfaceConfig {
 fn create_container() -> Result<()> {
     tracing::info!("Starting containix");
     let args = CliArgs::parse();
-    let store_items = build_inputs(&args)?;
-    let closure = combine_closures(&store_items)?;
+    let store_item = build_container(&args)?;
+    let closure = store_item.closure()?;
 
     let mut container = container::Container::temp_container()?;
     container.set_keep(args.keep_container);
     tracing::info!("Container root: {}", container.root().display());
 
     let mut config = ContainerConfig {
-        command: args.command,
-        exposed_components: store_items,
-        workdir: args.workdir,
-        ..Default::default()
+        flake: store_item.clone(),
+        args: args.args,
+        interface: Default::default(),
     };
 
     tracing::info!("Mounting components");
@@ -178,45 +130,27 @@ fn create_container() -> Result<()> {
     Ok(())
 }
 
-fn build_inputs(args: &CliArgs) -> Result<Vec<NixStoreItem>> {
-    tracing::info!("Assembling & building inputs");
-    let mut build_inputs: Vec<NixDerivation> = args
-        .package
-        .iter()
-        .map(|p| NixDerivation::package_from_flake(p, &args.dangerous_flags.nixpkgs))
-        .collect();
-    build_inputs.extend(args.flake.clone());
-
-    if !args.dangerous_flags.no_minimal_expose {
-        build_inputs.extend(TOOLS.values().map(|tool| {
-            NixDerivation::package_from_flake(tool.component.clone(), &args.dangerous_flags.nixpkgs)
-        }));
-    }
-
-    tracing::trace!("Flakes to build: {build_inputs:?}");
-    let store_items = build_inputs
-        .into_iter()
-        .map(|flake| {
-            tracing::info!("Building input flake: {}", flake);
-            flake.build().context("Building input flake")
-        })
-        .collect::<Result<Vec<_>>>()?;
-    tracing::trace!("Flakes built: {store_items:?}");
-    Ok(store_items)
+#[instrument(level = "trace", skip_all, ret)]
+fn build_container(args: &CliArgs) -> Result<NixStoreItem> {
+    tracing::info!("Building flake container...");
+    let store_item = args.flake.build().context("Building flake container")?;
+    Ok(store_item)
 }
 
+#[instrument(level = "trace", ret)]
 fn setup_network(network: &network_config::NetworkConfig) -> Result<(Interface, Interface)> {
     tracing::info!("Configuring network");
     let available_interface_name =
         find_available_veth_name().context("Finding available veth interface")?;
-    tracing::info!("Using {available_interface_name} for container interface");
+    tracing::trace!("Using {available_interface_name} for container interface");
     let (veth_host, veth_container) = Interface::create_veth(
         &available_interface_name,
         format!("{available_interface_name}-peer"),
     )
     .context("Creating veth interface")?;
     tracing::trace!(
-        "Setting host interface address to {}/{}",
+        "Setting host interface ({}) address to {}/{}",
+        veth_host.name(),
         network.host_address.to_string(),
         network.netmask.to_string()
     );
@@ -245,13 +179,7 @@ fn find_available_veth_name() -> Result<String> {
 }
 
 fn build_path_env(config: &ContainerConfig) -> OsString {
-    let component_paths: Vec<_> = config
-        .exposed_components
-        .iter()
-        .map(|c| c.as_path().join("bin").as_os_str().to_os_string())
-        .collect();
-
-    component_paths.join(&OsString::from(":"))
+    config.flake.path.join("bin").into()
 }
 
 fn main() -> Result<()> {

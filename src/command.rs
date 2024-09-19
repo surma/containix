@@ -5,6 +5,7 @@ use std::{
 };
 
 use anyhow::Result;
+use tracing::{debug, error, instrument};
 
 pub fn resolve_command(command: impl AsRef<OsStr>) -> PathBuf {
     let command = command.as_ref();
@@ -21,12 +22,8 @@ pub fn resolve_command(command: impl AsRef<OsStr>) -> PathBuf {
     command.into()
 }
 
+#[instrument(level = "trace", ret)]
 pub fn run_command(command: Command) -> Result<Output> {
-    tracing::trace!(
-        "Running command: {command:?} with path: {:?}",
-        std::env::var("PATH")
-    );
-
     // This is a dirty hack.
     // For some reason, std::process::Command is not actually respecting $PATH
     // so I currently have to re-implement it.
@@ -40,12 +37,12 @@ pub fn run_command(command: Command) -> Result<Output> {
     new_command.stdout(std::process::Stdio::piped());
     new_command.stderr(std::process::Stdio::piped());
     let output = new_command.output()?;
+    debug!("Command {command:?} output: {output:?}");
     if !output.status.success() {
-        anyhow::bail!(
-            "Failed to run {command:?}: {}",
-            &String::from_utf8(output.stderr)
-                .unwrap_or_else(|_| "<Invalid UTF-8 on stderr>".to_string())
-        );
+        let stderr = String::from_utf8(output.stderr)
+            .unwrap_or_else(|_| "<Invalid UTF-8 on stderr>".to_string());
+        error!("Command {command:?} failed: {stderr}");
+        anyhow::bail!("Command {command:?} failed");
     }
     Ok(output)
 }
