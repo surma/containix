@@ -10,24 +10,11 @@ Take a look at the [examples](./example/) to get started.
 
 ## Installation
 
-1. Clone the repository:
+You must have nix installed for containix to work. As a result, you can run containix directly:
 
-   ```console
-   $ git clone https://github.com/surma/containix
-   $ cd containix
-   ```
-
-2. Build the project:
-
-   ```console
-   $ nix build .
-   ```
-
-   If you don’t have Nix installed, you can use bog-standard cargo, but make sure to target your architecture wuth the muslibc to ensure a statically linked binary:
-
-   ```console
-   $ cargo build --target x86_64-unknown-linux-musl --release
-   ```
+```console
+$ nix run github:surma/containix
+```
 
 ## Usage
 
@@ -41,4 +28,18 @@ Mount a host directory into the container and create a subnet where 10.0.0.1 is 
 
 ```console
 $ containix -f /path/to/flake --volume $PWD:/workdir --network 10.0.0.1+10.0.0.2/8
+```
+
+Since containers are flakes, you can run the examples in this repository as follows:
+
+```console
+$ containix -f 'github:surma/containix?dir=example/simple_container'
+```
+
+## Development Building
+
+For development, you can use normal cargo. However, make sure to target your architecture with the muslibc to get a statically linked binary:
+
+```console
+$ cargo build --target x86_64-unknown-linux-musl --release
 ```
