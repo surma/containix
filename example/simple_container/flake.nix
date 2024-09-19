@@ -38,6 +38,16 @@
               util-linux
             ]);
         };
+        apps.default = flake-utils.lib.mkApp { drv = packages.default; };
+        devShell = mkShell {
+          buildInputs = with pkgs; [
+            nix
+            rustc
+            cargo
+            pkg-config
+            glibc
+          ];
+        };
       }
     );
 }

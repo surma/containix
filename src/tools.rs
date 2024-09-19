@@ -1,7 +1,7 @@
 use crate::nix_helpers::NixDerivation;
 use std::collections::HashMap;
 use std::ffi::OsString;
-use std::{str::FromStr, sync::LazyLock};
+use std::sync::LazyLock;
 
 pub fn is_container() -> bool {
     std::env::var("CONTAINIX_CONTAINER").is_ok()
