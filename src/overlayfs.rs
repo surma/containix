@@ -3,154 +3,82 @@ use std::{
     path::PathBuf,
 };
 
-use derive_more::derive::{Deref, From};
+use anyhow::{bail, Result};
+use derive_more::derive::{Deref, DerefMut, From};
 use thiserror::Error;
 use tracing::error;
-use typed_builder::TypedBuilder;
 
-#[derive(Debug, Error)]
-pub enum OverlayFsError {
-    #[error("Failed to create directory {0}: {1}")]
-    FolderCreation(PathBuf, std::io::Error),
-    #[error("Failed to mount overlayfs: {0}")]
-    Mount(std::io::Error),
-}
-
-pub type Result<T> = std::result::Result<T, OverlayFsError>;
-
-#[derive(Debug, Clone, PartialEq, TypedBuilder)]
-#[builder(build_method(name = finish))]
-pub struct OverlayFs {
-    #[builder(default = vec![])]
-    lower: Vec<PathBuf>,
-    #[builder(setter(strip_option), default)]
-    upper: Option<PathBuf>,
-    #[builder(default = true)]
-    create_upper_dir: bool,
-    #[builder(default = true)]
-    cleanup_upper_dir: bool,
-    #[builder(default = "./work".into())]
-    work: PathBuf,
-    #[builder(default = true)]
-    create_work_dir: bool,
-    #[builder(default = true)]
-    cleanup_work_dir: bool,
-    target: PathBuf,
-    #[builder(setter(strip_option), default)]
-    base: Option<PathBuf>,
-}
-
+#[derive(Debug, Clone, PartialEq, Deref, DerefMut)]
+pub struct OverlayFs(PathBuf);
 impl OverlayFs {
-    pub fn work_dir(&self) -> PathBuf {
-        self.base
-            .clone()
-            .unwrap_or_else(|| PathBuf::from("/"))
-            .join(&self.work)
-    }
-    pub fn upper_dir(&self) -> Option<PathBuf> {
-        Some(
-            self.base
-                .clone()
-                .unwrap_or_else(|| PathBuf::from("/"))
-                .join(self.upper.as_ref()?),
-        )
-    }
+    pub fn new(
+        lower: Vec<PathBuf>,
+        upper: Option<PathBuf>,
+        work: Option<PathBuf>,
+        target: PathBuf,
+    ) -> Result<Self> {
+        let mut cmd = std::process::Command::new("mount");
+        cmd.arg("-t").arg("overlay").arg("overlay");
 
-    pub fn target_dir(&self) -> PathBuf {
-        self.base
-            .clone()
-            .unwrap_or_else(|| PathBuf::from("/"))
-            .join(&self.target)
-    }
-
-    fn create_dir(&self, path: &PathBuf) -> Result<()> {
-        std::fs::create_dir_all(path).map_err(|e| OverlayFsError::FolderCreation(path.clone(), e))
-    }
-
-    pub fn apply(self) -> Result<OverlayFsGuard> {
-        if self.create_upper_dir {
-            if let Some(upper_dir) = &self.upper_dir() {
-                self.create_dir(upper_dir)?;
-            }
-        }
-        if self.create_work_dir {
-            self.create_dir(&self.work_dir())?;
-        }
-
-        // Can’t use format! because of it doesn’t work with OsString et al.
-        let mut lower = OsString::from("-olowerdir=");
-        lower.push(
-            self.lower
+        let mut lower_opt = OsString::from("-olowerdir=");
+        lower_opt.push(
+            lower
                 .iter()
                 .map(|p| p.as_os_str())
                 .collect::<Vec<_>>()
                 .join(OsStr::new(":")),
         );
+        cmd.arg(lower_opt);
 
-        let mut cmd = std::process::Command::new("mount");
-        cmd.arg("-t").arg("overlay").arg("overlay");
+        if let Some(upper) = upper {
+            std::fs::create_dir_all(&upper)?;
 
-        cmd.arg(lower);
-
-        if let Some(upper_dir) = &self.upper_dir() {
-            let mut upper = OsString::from("-oupperdir=");
-            upper.push(upper_dir);
-
-            let mut work = OsString::from("-oworkdir=");
-            work.push(self.work_dir());
-
-            cmd.arg(upper).arg(work);
+            let mut upper_opt = OsString::from("-oupperdir=");
+            upper_opt.push(upper);
+            cmd.arg(upper_opt);
         }
 
-        cmd.arg(self.target_dir());
+        if let Some(work) = work {
+            std::fs::create_dir_all(&work)?;
+            let mut work_opt = OsString::from("-oworkdir=");
+            work_opt.push(work);
+            cmd.arg(work_opt);
+        }
 
-        let output = cmd.output().map_err(OverlayFsError::Mount)?;
+        cmd.arg(&target);
+
+        let output = cmd.output()?;
         if !output.status.success() {
-            return Err(OverlayFsError::Mount(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                String::from_utf8_lossy(&output.stderr),
-            )));
+            error!(
+                "Failed to mount overlayfs: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            bail!("Failed to mount overlayfs");
         }
-        Ok(self.into())
+        Ok(OverlayFs(target))
     }
 }
 
-#[derive(Debug, From, Deref)]
-pub struct OverlayFsGuard(OverlayFs);
-
-impl Drop for OverlayFsGuard {
+impl Drop for OverlayFs {
     fn drop(&mut self) {
-        fn inner(fs: &OverlayFs) -> anyhow::Result<()> {
+        fn inner(fs: &OverlayFs) -> Result<()> {
             use anyhow::Context;
 
             let mut cmd = std::process::Command::new("umount");
-            cmd.arg(&fs.target_dir());
+            cmd.arg(&fs.0);
             let output = cmd.output().context("Failed to run `unmount`")?;
             if !output.status.success() {
                 error!(
                     "Failed to unmount overlayfs: {}",
                     String::from_utf8_lossy(&output.stderr)
                 );
-                anyhow::bail!("Failed to unmount overlayfs");
-            }
-
-            if fs.cleanup_upper_dir {
-                if let Some(upper_dir) = &fs.upper_dir() {
-                    std::fs::remove_dir_all(upper_dir).context("Failed to clean up upper dir")?;
-                }
-            }
-
-            if fs.cleanup_work_dir {
-                std::fs::remove_dir_all(&fs.work_dir()).context("Failed to clean up work dir")?;
+                bail!("Failed to unmount overlayfs");
             }
             Ok(())
         }
-        match inner(&*self) {
+        match inner(self) {
             Ok(_) => (),
-            Err(e) => error!(
-                "Failed to cleanup overlayfs {}: {e}",
-                self.target_dir().display()
-            ),
+            Err(e) => error!("Failed to cleanup overlayfs {}: {e}", self.0.display()),
         }
     }
 }
@@ -183,7 +111,8 @@ mod tests {
 
     #[test]
     #[cfg_attr(not(target_os = "linux"), ignore = "overlayfs is a Linux feature")]
-    fn test_readonly() -> Result<()> {
+    fn test_readonly_simple() -> Result<()> {
+        tracing_subscriber::fmt::init();
         let tmpdir = temptree! {
             "lower_1/a" = "a";
             "lower_2/b" = "b";
@@ -191,15 +120,16 @@ mod tests {
         }?;
 
         let target = tmpdir.join("target");
-        let overlayfs = OverlayFs::builder()
-            .lower(vec![tmpdir.join("lower_1"), tmpdir.join("lower_2")])
-            .target(target.clone())
-            .finish();
         {
-            let _guard = overlayfs.apply()?;
-            assert!(std::fs::metadata(&target.join("a"))?.is_file());
-            assert!(std::fs::metadata(&target.join("b"))?.is_file());
-            assert!(std::fs::write(target.join("c"), "a_new").is_err());
+            let overlayfs = OverlayFs::new(
+                vec![tmpdir.join("lower_1"), tmpdir.join("lower_2")],
+                None,
+                None,
+                target.clone(),
+            )?;
+            assert!(std::fs::metadata(&overlayfs.join("a"))?.is_file());
+            assert!(std::fs::metadata(&overlayfs.join("b"))?.is_file());
+            assert!(std::fs::write(overlayfs.join("c"), "a_new").is_err());
         }
         assert!(std::fs::metadata(&target.join("a"))
             .is_err_and(|err| err.kind() == std::io::ErrorKind::NotFound));
@@ -223,17 +153,18 @@ mod tests {
         }?;
 
         let target = tmpdir.join("target");
-        let overlayfs = OverlayFs::builder()
-            .lower(vec![tmpdir.join("lower_2"), tmpdir.join("lower_1")])
-            .target(target.clone())
-            .finish();
+        let overlayfs = OverlayFs::new(
+            vec![tmpdir.join("lower_2"), tmpdir.join("lower_1")],
+            Some(target.clone()),
+            None,
+            target,
+        )?;
 
-        let _guard = overlayfs.apply()?;
-        assert_eq!(std::fs::read_to_string(target.join("f/a"))?, "2");
-        assert_eq!(std::fs::read_to_string(target.join("f/b"))?, "1");
-        assert_eq!(std::fs::read_to_string(target.join("f/d"))?, "2");
-        assert_eq!(std::fs::read_to_string(target.join("c"))?, "2");
-        assert_eq!(std::fs::read_to_string(target.join("e"))?, "2");
+        assert_eq!(std::fs::read_to_string(overlayfs.join("f/a"))?, "2");
+        assert_eq!(std::fs::read_to_string(overlayfs.join("f/b"))?, "1");
+        assert_eq!(std::fs::read_to_string(overlayfs.join("f/d"))?, "2");
+        assert_eq!(std::fs::read_to_string(overlayfs.join("c"))?, "2");
+        assert_eq!(std::fs::read_to_string(overlayfs.join("e"))?, "2");
         Ok(())
     }
 }
