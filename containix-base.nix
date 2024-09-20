@@ -5,12 +5,19 @@
   coreutils,
   bash,
   buildEnv,
-  lib
+  lib,
 }@args:
+let
+  inherit (lib.attrsets) removeAttrs attrValues;
+in
 buildEnv {
   name = "containix-base";
-  paths = lib.removeAttrs args [
-    "buildEnv"
-    "lib"
-  ];
+  # Slightly level of indirection. But this way adding an input to this callPackage pattern
+  # will make it automatically be part of the base.
+  paths = attrValues (
+    removeAttrs args [
+      "buildEnv"
+      "lib"
+    ]
+  );
 }
