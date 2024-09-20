@@ -5,10 +5,11 @@
   coreutils,
   bash,
   buildEnv,
+  lib
 }@args:
 buildEnv {
   name = "containix-base";
-  paths = builtins.removeAttrs args [
+  paths = lib.removeAttrs args [
     "buildEnv"
     "lib"
   ];
