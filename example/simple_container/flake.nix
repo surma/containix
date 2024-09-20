@@ -37,7 +37,7 @@
               echo -e "\n# ls ''${1:-/}"
               ls -alh ''${1:-/}
             '')
-            containix.base
+            containix.packages.${system}.base
           ];
         };
         apps.default = flake-utils.lib.mkApp { drv = packages.default; };
