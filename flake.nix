@@ -2,7 +2,7 @@
   description = "containix";
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/a6292e34000dc93d43bccf78338770c1c5ec8a99";
+    nixpkgs.url = "github:NixOS/nixpkgs/24.05";
     fenix = {
       url = "github:nix-community/fenix";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -26,14 +26,14 @@
     eachSystem linuxSystems (
       system:
       let
-        pkgs = import nixpkgs { inherit system; };
+        pkgs = nixpkgs.legacyPackages.${system};
+        inherit (pkgs) callPackage;
       in
       {
-        packages = {
-          default = import ./default.nix {
-            inherit pkgs system;
-            fenix = fenix.packages.${system};
-          };
+        packages = rec {
+          default = containix;
+          containix = callPackage (import ./default.nix) { fenix = fenix.packages.${system}; };
+          base = callPackage (import ./containix-base.nix) { };
         };
       }
     );

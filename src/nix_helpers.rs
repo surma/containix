@@ -220,9 +220,10 @@ pub fn get_flake_info(flake_expression: impl AsRef<str>) -> Result<NixFlakeShowO
         // FIXME:
         // The code that builds packages checks that it is actually present on the flake. This is probably a bad idea for nixpkgs, but for now I force all packages to be listed.
         .arg("--legacy")
-        // TODO:
-        // This allows the example in the README to work. Maybe this is a bad idea?
-        .arg("--no-write-lock-file")
+        .arg("--reference-lock-file")
+        .arg("containix.lock")
+        .arg("--output-lock-file")
+        .arg("containix.lock")
         .arg("--quiet");
 
     let output = run_command(command).context("Running nix flake show")?;
@@ -298,9 +299,10 @@ pub fn build_nix_flake(
             ))
             .arg("--json")
             .arg("--quiet")
-            // TODO:
-            // This allows the example in the README to work. Maybe this is a bad idea?
-            .arg("--no-write-lock-file")
+            .arg("--reference-lock-file")
+            .arg("containix.lock")
+            .arg("--output-lock-file")
+            .arg("containix.lock")
             .arg("--no-link");
 
         let output = run_command(command).context("Running nix build")?;
