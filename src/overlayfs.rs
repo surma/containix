@@ -155,7 +155,7 @@ mod tests {
         let target = tmpdir.join("target");
         let overlayfs = OverlayFs::new(
             vec![tmpdir.join("lower_2"), tmpdir.join("lower_1")],
-            Some(target.clone()),
+            None,
             None,
             target,
         )?;
