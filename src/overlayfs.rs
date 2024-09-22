@@ -107,7 +107,7 @@ macro_rules! temptree {
 mod tests {
     use super::*;
 
-    use anyhow::Result;
+    use anyhow::{Context, Result};
 
     #[test]
     #[cfg_attr(not(target_os = "linux"), ignore = "overlayfs is a Linux feature")]
@@ -165,6 +165,75 @@ mod tests {
         assert_eq!(std::fs::read_to_string(overlayfs.join("f/d"))?, "2");
         assert_eq!(std::fs::read_to_string(overlayfs.join("c"))?, "2");
         assert_eq!(std::fs::read_to_string(overlayfs.join("e"))?, "2");
+        Ok(())
+    }
+
+    #[test]
+    #[cfg_attr(not(target_os = "linux"), ignore = "overlayfs is a Linux feature")]
+    fn test_write() -> Result<()> {
+        let tmpdir = temptree! {
+            "lower/f/a" = "1";
+            "lower/f/b" = "1";
+            "lower/c" = "1";
+            "upper/f/a" = "2";
+            "work/.empty" = "";
+            "target/.empty" = "";
+        }?;
+
+        let target = tmpdir.join("target");
+        let overlayfs = OverlayFs::new(
+            vec![tmpdir.join("lower")],
+            Some(tmpdir.join("upper")),
+            Some(tmpdir.join("work")),
+            target.clone(),
+        )?;
+        std::fs::write(overlayfs.join("d"), "lol").context("Writing to d")?;
+        std::fs::remove_dir_all(overlayfs.join("f")).context("Deleting f")?;
+
+        assert_eq!(
+            std::fs::read_to_string(overlayfs.join("d")).context("Reading d")?,
+            "lol"
+        );
+        assert!(std::fs::metadata(target.join("lower/d"))
+            .is_err_and(|err| err.kind() == std::io::ErrorKind::NotFound));
+
+        assert!(std::fs::metadata(overlayfs.join("f"))
+            .is_err_and(|err| err.kind() == std::io::ErrorKind::NotFound));
+        assert!(std::fs::metadata(tmpdir.join("lower/f"))
+            .context("Stating lower/f")?
+            .is_dir());
+        Ok(())
+    }
+
+    #[test]
+    #[cfg_attr(not(target_os = "linux"), ignore = "overlayfs is a Linux feature")]
+    fn test_shadow_dir() -> Result<()> {
+        let tmpdir = temptree! {
+            "lower/f/a" = "1";
+            "lower/f/b" = "1";
+            "upper/.empty" = "2";
+            "work/.empty" = "";
+            "target/.empty" = "";
+        }?;
+
+        let target = tmpdir.join("target");
+        let overlayfs = OverlayFs::new(
+            vec![tmpdir.join("lower")],
+            Some(tmpdir.join("upper")),
+            Some(tmpdir.join("work")),
+            target.clone(),
+        )?;
+        std::fs::remove_dir_all(overlayfs.join("f")).context("Deleting f")?;
+        std::fs::create_dir(overlayfs.join("f")).context("Creating f")?;
+        std::fs::write(overlayfs.join("f/a"), "3").context("Writing f/a")?;
+
+        assert_eq!(
+            std::fs::read_to_string(overlayfs.join("f/a")).context("Reading f/a")?,
+            "3"
+        );
+        assert!(std::fs::metadata(overlayfs.join("f/b"))
+            .is_err_and(|err| err.kind() == std::io::ErrorKind::NotFound));
+
         Ok(())
     }
 }
