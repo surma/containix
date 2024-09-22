@@ -4,8 +4,7 @@ use std::{
 };
 
 use anyhow::{bail, Result};
-use derive_more::derive::{Deref, DerefMut, From};
-use thiserror::Error;
+use derive_more::derive::{Deref, DerefMut};
 use tracing::error;
 
 #[derive(Debug, Clone, PartialEq, Deref, DerefMut)]
@@ -83,46 +82,48 @@ impl Drop for OverlayFs {
     }
 }
 
-macro_rules! temptree {
-    {$($path:literal = $content:literal;)*} => {
-        {
-            (|| -> ::anyhow::Result<crate::tempdir::TempDir> {
-                use ::anyhow::Context;
-
-                let tmpdir = crate::tempdir::TempDir::random();
-                std::fs::create_dir_all(&*tmpdir).with_context(|| format!("Creating tempdir {}", tmpdir.display()))?;
-                $({
-                    let path = tmpdir.join($path);
-                    let dir = path.parent().with_context(|| format!("Getting parent of {}", path.display()))?;
-                    std::fs::create_dir_all(dir).with_context(|| format!("Creating directory {}", dir.display()))?;
-                    std::fs::write(&path, $content).with_context(|| format!("Writing to {}", path.display()))?;
-                })*
-                Ok(tmpdir)
-            })()
-        }
-    };
-}
-
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use super::*;
 
     use anyhow::{Context, Result};
 
+    fn create_tmp_folder_structure(
+        items: impl IntoIterator<Item = (impl AsRef<Path>, impl AsRef<str>)>,
+    ) -> Result<tempdir::TempDir> {
+        use ::anyhow::Context;
+
+        let tmpdir = tempdir::TempDir::new("overlayfs-test")?;
+        std::fs::create_dir_all(tmpdir.path())
+            .with_context(|| format!("Creating tempdir {}", tmpdir.path().display()))?;
+        for (path, content) in items {
+            let path = tmpdir.path().join(path.as_ref());
+            let dir = path
+                .parent()
+                .with_context(|| format!("Getting parent of {}", path.display()))?;
+            std::fs::create_dir_all(dir)
+                .with_context(|| format!("Creating directory {}", dir.display()))?;
+            std::fs::write(&path, content.as_ref())
+                .with_context(|| format!("Writing to {}", path.display()))?;
+        }
+        Ok(tmpdir)
+    }
+
     #[test]
     #[cfg_attr(not(target_os = "linux"), ignore = "overlayfs is a Linux feature")]
     fn test_readonly_simple() -> Result<()> {
-        tracing_subscriber::fmt::init();
-        let tmpdir = temptree! {
-            "lower_1/a" = "a";
-            "lower_2/b" = "b";
-            "target/.empty" = "";
-        }?;
+        let tmpdir = create_tmp_folder_structure(vec![
+            ("lower_1/a", "a"),
+            ("lower_2/b", "b"),
+            ("target/.empty", ""),
+        ])?;
 
-        let target = tmpdir.join("target");
+        let target = tmpdir.path().join("target");
         {
             let overlayfs = OverlayFs::new(
-                vec![tmpdir.join("lower_1"), tmpdir.join("lower_2")],
+                vec![tmpdir.path().join("lower_1"), tmpdir.path().join("lower_2")],
                 None,
                 None,
                 target.clone(),
@@ -141,20 +142,20 @@ mod tests {
     #[test]
     #[cfg_attr(not(target_os = "linux"), ignore = "overlayfs is a Linux feature")]
     fn test_shadow_order() -> Result<()> {
-        let tmpdir = temptree! {
-            "lower_1/f/a" = "1";
-            "lower_1/f/b" = "1";
-            "lower_1/c" = "1";
-            "lower_2/f/a" = "2";
-            "lower_2/f/d" = "2";
-            "lower_2/c" = "2";
-            "lower_2/e" = "2";
-            "target/.empty" = "";
-        }?;
+        let tmpdir = create_tmp_folder_structure(vec![
+            ("lower_1/f/a", "1"),
+            ("lower_1/f/b", "1"),
+            ("lower_1/c", "1"),
+            ("lower_2/f/a", "2"),
+            ("lower_2/f/d", "2"),
+            ("lower_2/c", "2"),
+            ("lower_2/e", "2"),
+            ("target/.empty", ""),
+        ])?;
 
-        let target = tmpdir.join("target");
+        let target = tmpdir.path().join("target");
         let overlayfs = OverlayFs::new(
-            vec![tmpdir.join("lower_2"), tmpdir.join("lower_1")],
+            vec![tmpdir.path().join("lower_2"), tmpdir.path().join("lower_1")],
             None,
             None,
             target,
@@ -171,20 +172,20 @@ mod tests {
     #[test]
     #[cfg_attr(not(target_os = "linux"), ignore = "overlayfs is a Linux feature")]
     fn test_write() -> Result<()> {
-        let tmpdir = temptree! {
-            "lower/f/a" = "1";
-            "lower/f/b" = "1";
-            "lower/c" = "1";
-            "upper/f/a" = "2";
-            "work/.empty" = "";
-            "target/.empty" = "";
-        }?;
+        let tmpdir = create_tmp_folder_structure(vec![
+            ("lower/f/a", "1"),
+            ("lower/f/b", "1"),
+            ("lower/c", "1"),
+            ("upper/f/a", "2"),
+            ("work/.empty", ""),
+            ("target/.empty", ""),
+        ])?;
 
-        let target = tmpdir.join("target");
+        let target = tmpdir.path().join("target");
         let overlayfs = OverlayFs::new(
-            vec![tmpdir.join("lower")],
-            Some(tmpdir.join("upper")),
-            Some(tmpdir.join("work")),
+            vec![tmpdir.path().join("lower")],
+            Some(tmpdir.path().join("upper")),
+            Some(tmpdir.path().join("work")),
             target.clone(),
         )?;
         std::fs::write(overlayfs.join("d"), "lol").context("Writing to d")?;
@@ -199,7 +200,7 @@ mod tests {
 
         assert!(std::fs::metadata(overlayfs.join("f"))
             .is_err_and(|err| err.kind() == std::io::ErrorKind::NotFound));
-        assert!(std::fs::metadata(tmpdir.join("lower/f"))
+        assert!(std::fs::metadata(tmpdir.path().join("lower/f"))
             .context("Stating lower/f")?
             .is_dir());
         Ok(())
@@ -208,19 +209,19 @@ mod tests {
     #[test]
     #[cfg_attr(not(target_os = "linux"), ignore = "overlayfs is a Linux feature")]
     fn test_shadow_dir() -> Result<()> {
-        let tmpdir = temptree! {
-            "lower/f/a" = "1";
-            "lower/f/b" = "1";
-            "upper/.empty" = "2";
-            "work/.empty" = "";
-            "target/.empty" = "";
-        }?;
+        let tmpdir = create_tmp_folder_structure(vec![
+            ("lower/f/a", "1"),
+            ("lower/f/b", "1"),
+            ("upper/.empty", "2"),
+            ("work/.empty", ""),
+            ("target/.empty", ""),
+        ])?;
 
-        let target = tmpdir.join("target");
+        let target = tmpdir.path().join("target");
         let overlayfs = OverlayFs::new(
-            vec![tmpdir.join("lower")],
-            Some(tmpdir.join("upper")),
-            Some(tmpdir.join("work")),
+            vec![tmpdir.path().join("lower")],
+            Some(tmpdir.path().join("upper")),
+            Some(tmpdir.path().join("work")),
             target.clone(),
         )?;
         std::fs::remove_dir_all(overlayfs.join("f")).context("Deleting f")?;

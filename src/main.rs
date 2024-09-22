@@ -22,7 +22,6 @@ mod init;
 mod network_config;
 mod nix_helpers;
 mod overlayfs;
-mod tempdir;
 mod tools;
 mod volume_mount;
 
