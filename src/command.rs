@@ -22,7 +22,7 @@ pub fn resolve_command(command: impl AsRef<OsStr>) -> PathBuf {
     command.into()
 }
 
-#[instrument(level = "trace", ret)]
+#[instrument(level = "trace", skip_all)]
 pub fn run_command(command: Command) -> Result<Output> {
     // This is a dirty hack.
     // For some reason, std::process::Command is not actually respecting $PATH
