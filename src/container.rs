@@ -70,7 +70,6 @@ impl ContainerFsBuilder<((PathBuf,), (Vec<(PathBuf, PathBuf)>,), (Vec<PathBuf>,)
 
         let misc = base.path().join("misc");
         std::fs::create_dir_all(misc.join("proc")).context("Creating proc dir")?;
-        copy_containix(&misc).context("Copying containix")?;
 
         let upper_dir = base.path().join("upper");
         let work_dir = base.path().join("work");
@@ -103,11 +102,6 @@ impl ContainerFsBuilder<((PathBuf,), (Vec<(PathBuf, PathBuf)>,), (Vec<PathBuf>,)
             })
             .collect::<Result<Vec<_>>>()
             .context("Mounting volumes")?;
-
-        Command::new("tree").arg(rootfs.as_path()).status()?;
-        Command::new("tree")
-            .arg(rootfs.as_path().join("containix"))
-            .status()?;
 
         Ok(ContainerFsGuard {
             volumes,
@@ -189,18 +183,6 @@ impl<T: AsRef<Path>> UnshareContainer<T> {
         let child = unshare.spawn()?;
         Ok(child)
     }
-}
-
-#[instrument(level = "trace", skip_all, fields(root = %root.as_ref().display()))]
-fn copy_containix(root: impl AsRef<Path>) -> Result<()> {
-    let target = root.as_ref().join("containix");
-
-    let n = std::fs::copy("/proc/self/exe", &target)?;
-    trace!("Copied containix: {n} bytes");
-    let mut permissions = std::fs::metadata(&target)?.permissions();
-    permissions.set_mode(0o755);
-    std::fs::set_permissions(&target, permissions)?;
-    Ok(())
 }
 
 pub trait ContainerHandle {

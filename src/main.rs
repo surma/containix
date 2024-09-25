@@ -118,7 +118,11 @@ fn create_container() -> Result<()> {
     .context("Writing container config")?;
 
     let mut container_pid = container
-        .spawn("/containix", &[] as &[&OsStr], build_path_env(&config))
+        .spawn(
+            store_item.path.join("bin").join("containix"),
+            &[] as &[&OsStr],
+            build_path_env(&config),
+        )
         .context("Spawning container")?;
 
     if let Some((veth_host, veth_container)) = &interfaces {

@@ -28,14 +28,15 @@
           name = "simple-container";
           paths = [
             (writeShellScriptBin "simple-container" ''
+              # echo -e "\n# Mounts"
+              mount
               echo -e "\n# Environment"
               env
-              # echo -e "\n# Mounts"
-              # mount
               echo -e "\n# Network"
               ip addr
               echo -e "\n# ls ''${1:-/}"
               ls -alh ''${1:-/}
+              exec /bin/bash
             '')
             containix.packages.${system}.base
           ];
