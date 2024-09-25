@@ -1,17 +1,19 @@
 use std::{
     collections::HashSet,
     ffi::{OsStr, OsString},
+    mem::ManuallyDrop,
     net::Ipv4Addr,
+    path::PathBuf,
 };
 
 use anyhow::{Context, Result};
 use clap::Parser;
 use command_wrappers::Interface;
-use container::ContainerHandle;
+use container::{ContainerFs, ContainerHandle, UnshareContainer};
 use nix_helpers::{NixDerivation, NixStoreItem};
 use serde::{Deserialize, Serialize};
 use tools::is_container;
-use tracing::{info_span, instrument};
+use tracing::{info_span, instrument, warn};
 use tracing_subscriber::{fmt, EnvFilter};
 use volume_mount::VolumeMount;
 
@@ -21,6 +23,7 @@ mod container;
 mod init;
 mod network_config;
 mod nix_helpers;
+mod overlayfs;
 mod tools;
 mod volume_mount;
 
@@ -73,9 +76,20 @@ fn create_container() -> Result<()> {
     let store_item = build_container(&args)?;
     let closure = store_item.closure()?;
 
-    let mut container = container::Container::temp_container()?;
+    let mut container_fs = ContainerFs::build().rootfs(store_item.as_path());
+
+    for component in &closure {
+        container_fs = container_fs.expose_nix_item(component);
+    }
+
+    for volume in &args.volumes {
+        container_fs = container_fs.add_volume_mount(&volume.host_path, &volume.container_path);
+    }
+    let container_fs = container_fs.create()?;
+    tracing::info!("Container root: {}", container_fs.display());
+
+    let mut container = UnshareContainer::new(container_fs)?;
     container.set_keep(args.keep_container);
-    tracing::info!("Container root: {}", container.root().display());
 
     let mut config = ContainerConfig {
         flake: store_item.clone(),
@@ -83,14 +97,6 @@ fn create_container() -> Result<()> {
         interface: Default::default(),
     };
 
-    tracing::info!("Mounting components");
-    for component in &closure {
-        container.bind_mount(component.as_path(), component.as_path(), true)?;
-    }
-    tracing::info!("Mounting volumes");
-    for volume in &args.volumes {
-        container.bind_mount(&volume.host_path, &volume.container_path, false)?;
-    }
     let interfaces = if let Some(network) = &args.network {
         container.set_netns(true);
         let (host_veth, container_veth) = setup_network(network)?;
@@ -112,7 +118,11 @@ fn create_container() -> Result<()> {
     .context("Writing container config")?;
 
     let mut container_pid = container
-        .spawn("/containix", &[] as &[&OsStr], build_path_env(&config))
+        .spawn(
+            store_item.path.join("bin").join("containix"),
+            &[] as &[&OsStr],
+            build_path_env(&config),
+        )
         .context("Spawning container")?;
 
     if let Some((veth_host, veth_container)) = &interfaces {
@@ -124,10 +134,15 @@ fn create_container() -> Result<()> {
         .wait()
         .context("Waiting for container to exit")?;
 
+    if args.keep_container {
+        warn!("Not cleaning up {}", container.root().display());
+        _ = ManuallyDrop::new(container);
+    }
+
     Ok(())
 }
 
-#[instrument(level = "trace", skip_all, ret)]
+#[instrument(level = "trace", skip_all)]
 fn build_container(args: &CliArgs) -> Result<NixStoreItem> {
     tracing::info!("Building flake container...");
     let store_item = args.flake.build().context("Building flake container")?;

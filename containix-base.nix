@@ -9,6 +9,8 @@
   coreutils,
   # `bash`
   bash,
+  # containix itself
+  containix,
 
   # Stuff required to assemble the base layer.
   buildEnv,

@@ -1,33 +1,134 @@
 use anyhow::{Context, Result};
+use derive_more::derive::{Deref, DerefMut};
+use tracing::{instrument, trace};
+use typed_builder::TypedBuilder;
 
 use std::{
     ffi::{OsStr, OsString},
+    mem::ManuallyDrop,
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
+    process::Command,
     sync::LazyLock,
 };
 
 use crate::{
     command_wrappers::{bind_mount, unmount},
+    nix_helpers::NixStoreItem,
+    overlayfs::{mount, MountGuard, OverlayFs, OverlayFsGuard},
     tools::TOOLS,
 };
 
 static UNSHARE: LazyLock<OsString> = LazyLock::new(|| TOOLS.get("unshare").unwrap().path.clone());
 
+#[derive(Debug, Clone, TypedBuilder)]
+#[builder(builder_method(name = build))]
+#[builder(build_method(name = __create, vis = ""))]
+#[builder(mutators(
+    pub fn add_volume_mount(&mut self, src: impl Into<PathBuf>, target: impl Into<PathBuf>) {
+        self.volumes.push((src.into(), target.into()));
+    }
+))]
+#[builder(mutators(
+    pub fn expose_nix_item(&mut self, item: impl Into<PathBuf>) {
+        self.nix_mounts.push(item.into());
+    }
+))]
+pub struct ContainerFs {
+    #[builder(setter(into))]
+    rootfs: PathBuf,
+    #[builder(via_mutators(init = Vec::new()))]
+    volumes: Vec<(PathBuf, PathBuf)>,
+    #[builder(via_mutators(init = Vec::new()))]
+    nix_mounts: Vec<PathBuf>,
+}
+
+#[derive(Debug, Deref)]
+pub struct ContainerFsGuard {
+    // Order is important here, as drop runs in order of declaration.
+    // https://doc.rust-lang.org/stable/std/ops/trait.Drop.html#drop-order
+    volumes: Vec<MountGuard>,
+    nix_mounts: Vec<MountGuard>,
+    #[deref]
+    rootfs: OverlayFsGuard,
+    base: tempdir::TempDir,
+}
+
+#[allow(dead_code, non_camel_case_types, missing_docs)]
+#[automatically_derived]
+impl ContainerFsBuilder<((PathBuf,), (Vec<(PathBuf, PathBuf)>,), (Vec<PathBuf>,))> {
+    #[instrument(level = "trace", skip_all)]
+    #[allow(
+        clippy::default_trait_access,
+        clippy::used_underscore_binding,
+        clippy::no_effect_underscore_binding
+    )]
+    pub fn create(self) -> Result<ContainerFsGuard> {
+        let container = self.__create();
+        let base = tempdir::TempDir::new("containix-container").context("Creating tempdir")?;
+        std::fs::create_dir_all(base.path().join("root")).context("Creating root")?;
+
+        let misc = base.path().join("misc");
+        std::fs::create_dir_all(misc.join("proc")).context("Creating proc dir")?;
+
+        let upper_dir = base.path().join("upper");
+        let work_dir = base.path().join("work");
+        let rootfs = OverlayFs::builder()
+            .add_lower(container.rootfs)
+            .add_lower(misc)
+            .upper(upper_dir)
+            .work(work_dir)
+            .mount(base.path().join("root"))?;
+
+        let nix_mounts = container
+            .nix_mounts
+            .into_iter()
+            .map(|item| {
+                let target = rootfs.join(item.strip_prefix("/").unwrap_or(&item));
+                std::fs::create_dir_all(&target)?;
+                mount(Option::<&str>::None, &item, &target, ["bind,ro"])
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        let volumes = container
+            .volumes
+            .into_iter()
+            .map(|(src, target)| {
+                let target_dir = rootfs.join(target);
+                std::fs::create_dir_all(&target_dir)
+                    .context("Creating directory for bind mount")?;
+                mount(Option::<&str>::None, &src, &target_dir, ["bind,ro"])
+                    .with_context(|| format!("Mounting {src:?} -> {target_dir:?}"))
+            })
+            .collect::<Result<Vec<_>>>()
+            .context("Mounting volumes")?;
+
+        Ok(ContainerFsGuard {
+            volumes,
+            rootfs,
+            nix_mounts,
+            base,
+        })
+    }
+}
+
+impl AsRef<Path> for ContainerFsGuard {
+    fn as_ref(&self) -> &Path {
+        self.as_path()
+    }
+}
+
 #[derive(Debug)]
-pub struct Container {
-    root: PathBuf,
-    mounts: Vec<PathBuf>,
+pub struct UnshareContainer<T: AsRef<Path>> {
+    root: T,
     keep: bool,
     netns: bool,
 }
 
-impl Container {
-    pub fn new(root: PathBuf) -> Result<Self> {
-        copy_containix(&root)?;
+impl<T: AsRef<Path>> UnshareContainer<T> {
+    pub fn new(root: T) -> Result<Self> {
         Ok(Self {
             root,
-            mounts: Vec::new(),
             keep: false,
             netns: false,
         })
@@ -37,33 +138,8 @@ impl Container {
         self.keep = keep;
     }
 
-    pub fn temp_container() -> Result<Self> {
-        let container_id = uuid::Uuid::new_v4().to_string();
-        let temp_dir = std::env::temp_dir().join("containix").join(container_id);
-        std::fs::create_dir_all(&temp_dir).context("Creating temporary directory")?;
-        Self::new(temp_dir)
-    }
-
-    pub fn bind_mount(
-        &mut self,
-        src: impl AsRef<Path>,
-        target: impl AsRef<Path>,
-        read_only: bool,
-    ) -> Result<()> {
-        let src = src.as_ref();
-        let target = target.as_ref();
-        let target = target.strip_prefix("/").unwrap_or(target);
-        let target_dir = self.root.join(target);
-        tracing::trace!("Binding mount {src:?} -> {target_dir:?}");
-        std::fs::create_dir_all(&target_dir).context("Creating directory for bind mount")?;
-
-        bind_mount(src, target_dir, read_only).context("Mounting")?;
-        self.mounts.push(target.to_path_buf());
-        Ok(())
-    }
-
     pub fn root(&self) -> &Path {
-        &self.root
+        self.root.as_ref()
     }
 
     pub fn set_netns(&mut self, netns: bool) {
@@ -109,16 +185,6 @@ impl Container {
     }
 }
 
-fn copy_containix(root: impl AsRef<Path>) -> Result<()> {
-    let target = root.as_ref().join("containix");
-
-    std::fs::copy("/proc/self/exe", &target)?;
-    let mut permissions = std::fs::metadata(&target)?.permissions();
-    permissions.set_mode(0o755);
-    std::fs::set_permissions(&target, permissions)?;
-    Ok(())
-}
-
 pub trait ContainerHandle {
     fn pid(&self) -> u32;
     fn wait(&mut self) -> Result<u32>;
@@ -134,34 +200,5 @@ impl ContainerHandle for std::process::Child {
             .unwrap_or(0)
             .try_into()
             .unwrap())
-    }
-}
-
-impl Drop for Container {
-    fn drop(&mut self) {
-        if self.keep {
-            tracing::warn!(
-                "Keeping container at {}, not cleaning up",
-                self.root.display()
-            );
-            return;
-        }
-
-        for mount in &self.mounts {
-            let target_dir = self.root.join(mount);
-            if let Err(e) = unmount(&target_dir) {
-                tracing::error!(
-                    "Failed cleaning up bind mount {}: {e}",
-                    target_dir.display()
-                );
-            }
-        }
-
-        if let Err(e) = std::fs::remove_dir_all(&self.root) {
-            tracing::error!(
-                "Failed cleaning up container at {}: {e}",
-                self.root.display()
-            );
-        }
     }
 }

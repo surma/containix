@@ -29,7 +29,7 @@ impl NixStoreItem {
         path
     }
 
-    #[instrument(level = "trace", skip_all, fields(path = %self.as_path().display()), ret)]
+    #[instrument(level = "trace", skip_all, fields(path = %self.as_path().display()))]
     pub fn closure(&self) -> Result<HashSet<PathBuf>> {
         let output = Command::new("nix-store")
             .args(["--query", "--requisites"])
@@ -96,7 +96,7 @@ impl FromStr for NixDerivation {
 }
 
 impl NixDerivation {
-    #[instrument(level = "trace", ret)]
+    #[instrument(level = "trace", skip_all)]
     pub fn build(&self) -> Result<NixStoreItem> {
         match self {
             NixDerivation::FlakeExpression { flake, component } => {
@@ -232,7 +232,7 @@ pub fn get_flake_info(flake_expression: impl AsRef<str>) -> Result<NixFlakeShowO
     Ok(output)
 }
 
-#[instrument(level = "trace", skip_all, fields(flake_expression = %flake_expression.as_ref()), ret)]
+#[instrument(level = "trace", skip_all, fields(flake_expression = %flake_expression.as_ref()))]
 pub fn build_nix_flake_container(
     flake_expression: impl AsRef<str>,
     component: Option<impl AsRef<str>>,
