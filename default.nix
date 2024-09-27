@@ -1,7 +1,7 @@
 {
   rustPlatform,
   lib,
-  system
+  system,
 }:
 let
   toml = builtins.fromTOML (builtins.readFile ./Cargo.toml);

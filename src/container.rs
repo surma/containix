@@ -158,12 +158,14 @@ impl<T: AsRef<Path>> UnshareContainer<T> {
         unshare.arg("--root");
         unshare.arg(self.root());
         unshare.arg("--fork");
-        unshare.arg("-m");
-        unshare.arg("-p");
+        unshare.arg("--mount");
+        unshare.arg("--pid");
+        unshare.arg("--ipc");
         if self.netns {
-            unshare.arg("-n");
+            unshare.arg("--net");
         }
         unshare.arg("--mount-proc=/proc");
+        unshare.arg("--map-root-user");
         unshare.arg(command.as_ref());
         unshare.args(args);
         unshare.env_clear();

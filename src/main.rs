@@ -7,13 +7,13 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use command_wrappers::Interface;
 use container::{ContainerFs, ContainerHandle, UnshareContainer};
 use nix_helpers::{NixDerivation, NixStoreItem};
 use serde::{Deserialize, Serialize};
 use tools::is_container;
-use tracing::{info_span, instrument, warn};
+use tracing::{info, info_span, instrument, trace, warn};
 use tracing_subscriber::{fmt, EnvFilter};
 use volume_mount::VolumeMount;
 
@@ -29,7 +29,31 @@ mod volume_mount;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
-struct CliArgs {
+struct Cli {
+    #[command(subcommand)]
+    command: Commands,
+}
+
+#[derive(Subcommand, Debug)]
+enum Commands {
+    /// Build a Nix flake container
+    Build(BuildArgs),
+    /// Run a Nix flake container
+    Run(RunArgs),
+    /// Initialize the container (hidden from user)
+    #[command(hide = true)]
+    ContainerInit,
+}
+
+#[derive(Parser, Debug)]
+struct BuildArgs {
+    /// Nix flake container
+    #[arg(short = 'f', long = "flake", value_name = "NIX (FLAKE) FILE")]
+    flake: NixDerivation,
+}
+
+#[derive(Parser, Debug)]
+struct RunArgs {
     /// Nix flake container
     #[arg(short = 'f', long = "flake", value_name = "NIX (FLAKE) FILE")]
     flake: NixDerivation,
@@ -70,10 +94,17 @@ pub struct InterfaceConfig {
     netmask: Ipv4Addr,
 }
 
-fn create_container() -> Result<()> {
-    tracing::info!("Starting containix");
-    let args = CliArgs::parse();
-    let store_item = build_container(&args)?;
+fn build_command(args: BuildArgs) -> Result<()> {
+    let store_item = build_container(&args.flake)?;
+    info!(
+        "Container built successfully: {}",
+        store_item.path.display()
+    );
+    Ok(())
+}
+
+fn run_command(args: RunArgs) -> Result<()> {
+    let store_item = build_container(&args.flake)?;
     let closure = store_item.closure()?;
 
     let mut container_fs = ContainerFs::build().rootfs(store_item.as_path());
@@ -86,7 +117,7 @@ fn create_container() -> Result<()> {
         container_fs = container_fs.add_volume_mount(&volume.host_path, &volume.container_path);
     }
     let container_fs = container_fs.create()?;
-    tracing::info!("Container root: {}", container_fs.display());
+    info!("Container root: {}", container_fs.display());
 
     let mut container = UnshareContainer::new(container_fs)?;
     container.set_keep(args.keep_container);
@@ -120,7 +151,7 @@ fn create_container() -> Result<()> {
     let mut container_pid = container
         .spawn(
             store_item.path.join("bin").join("containix"),
-            &[] as &[&OsStr],
+            ["container-init"],
             build_path_env(&config),
         )
         .context("Spawning container")?;
@@ -143,24 +174,24 @@ fn create_container() -> Result<()> {
 }
 
 #[instrument(level = "trace", skip_all)]
-fn build_container(args: &CliArgs) -> Result<NixStoreItem> {
-    tracing::info!("Building flake container...");
-    let store_item = args.flake.build().context("Building flake container")?;
+fn build_container(flake: &NixDerivation) -> Result<NixStoreItem> {
+    info!("Building flake container...");
+    let store_item = flake.build().context("Building flake container")?;
     Ok(store_item)
 }
 
 #[instrument(level = "trace", ret)]
 fn setup_network(network: &network_config::NetworkConfig) -> Result<(Interface, Interface)> {
-    tracing::info!("Configuring network");
+    info!("Configuring network");
     let available_interface_name =
         find_available_veth_name().context("Finding available veth interface")?;
-    tracing::trace!("Using {available_interface_name} for container interface");
+    trace!("Using {available_interface_name} for container interface");
     let (veth_host, veth_container) = Interface::create_veth(
         &available_interface_name,
         format!("{available_interface_name}-peer"),
     )
     .context("Creating veth interface")?;
-    tracing::trace!(
+    trace!(
         "Setting host interface ({}) address to {}/{}",
         veth_host.name(),
         network.host_address.to_string(),
@@ -201,15 +232,11 @@ fn main() -> Result<()> {
         .with_writer(std::io::stderr)
         .init();
 
-    let span = info_span!(
-        "containix",
-        mode = if is_container() { "container" } else { "host" }
-    );
-    let _guard = span.enter();
+    let cli = Cli::parse();
 
-    if is_container() {
-        init::initialize_container()
-    } else {
-        create_container()
+    match cli.command {
+        Commands::Build(args) => build_command(args),
+        Commands::Run(args) => run_command(args),
+        Commands::ContainerInit => init::initialize_container(),
     }
 }

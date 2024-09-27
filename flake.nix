@@ -32,10 +32,10 @@
       {
         packages = rec {
           default = containix;
-          containix = callPackage (import ./default.nix) { 
+          containix = callPackage (import ./default.nix) {
             rustPlatform = pkgs.makeRustPlatform fenix.packages.${system}.stable;
           };
-          base = callPackage (import ./containix-base.nix) { inherit containix;};
+          base = callPackage (import ./containix-base.nix) { inherit containix; };
         };
       }
     );
