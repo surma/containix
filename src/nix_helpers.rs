@@ -1,27 +1,23 @@
-use anyhow::{anyhow, bail, Context, Result};
-use derive_more::derive::{Deref, DerefMut, From};
-use serde::{de::DeserializeOwned, Deserialize, Deserializer, Serialize};
+use anyhow::{bail, Context, Result};
+use derive_more::derive::{Deref, DerefMut};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::{
     collections::{HashMap, HashSet},
-    ffi::OsStr,
     fmt::Display,
-    path::{Component, Path, PathBuf},
+    path::{Path, PathBuf},
     process::Command,
     str::FromStr,
 };
-use tracing::{debug, error, instrument, trace};
+use tracing::{debug, error, instrument};
 
-use crate::{
-    cli_wrappers::nix::{FlakeOutputSymlink, NixBuild, NixEval},
-    command::run_command,
-};
+use crate::cli_wrappers::nix::{FlakeOutputSymlink, NixBuild, NixEval};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
 pub struct NixStoreItem(String);
 
-impl Into<PathBuf> for NixStoreItem {
-    fn into(self) -> PathBuf {
-        self.path()
+impl From<NixStoreItem> for PathBuf {
+    fn from(val: NixStoreItem) -> Self {
+        val.path()
     }
 }
 
@@ -33,7 +29,7 @@ impl<'de> Deserialize<'de> for NixStoreItem {
         use serde::de::Error;
 
         let s = String::deserialize(deserializer)?;
-        Ok(NixStoreItem::try_from(s.as_str()).map_err(|err| D::Error::custom(err))?)
+        NixStoreItem::try_from(s.as_str()).map_err(D::Error::custom)
     }
 }
 
@@ -205,7 +201,7 @@ impl NixFlake {
     }
 
     pub fn output(&self) -> Option<&str> {
-        self.output.as_ref().map(|v| v.as_str())
+        self.output.as_deref()
     }
 
     pub fn with_output(&self, package_name: impl AsRef<str>) -> Self {
@@ -252,40 +248,13 @@ impl NixBuildResult {
     }
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NixFlakeShowOutput {
     pub packages: Option<NixFlakePackages>,
     pub legacy_packages: Option<NixFlakePackages>,
     // Other items emitted
-}
-
-impl NixFlakeShowOutput {
-    pub fn find_package(
-        &self,
-        system: &NixSystem,
-        package_name: &str,
-    ) -> Option<(String, String, &HashMap<String, serde_json::Value>)> {
-        if let Some(packages) = &self.packages {
-            packages
-                .get(system)
-                .and_then(|packages| packages.get(package_name))
-                .map(|package| ("packages".to_string(), package_name.to_string(), package))
-        } else if let Some(legacy_packages) = &self.legacy_packages {
-            legacy_packages
-                .get(system)
-                .and_then(|packages| packages.get(package_name))
-                .map(|package| {
-                    (
-                        "legacyPackages".to_string(),
-                        package_name.to_string(),
-                        package,
-                    )
-                })
-        } else {
-            None
-        }
-    }
 }
 
 #[derive(Debug, Clone, Deserialize, Deref, DerefMut)]
@@ -327,6 +296,7 @@ impl<'de> Deserialize<'de> for NixSystem {
     }
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 pub struct NixFlakeBuildOutput {
     #[serde(rename = "drvPath")]
@@ -341,62 +311,4 @@ pub fn get_nix_system() -> Result<NixSystem> {
 
     let system: NixSystem = nix_cmd.run()?;
     Ok(system)
-}
-
-pub fn get_flake_info(flake_expression: impl AsRef<str>) -> Result<NixFlakeShowOutput> {
-    let mut command = Command::new("nix");
-    command
-        .arg("flake")
-        .arg("show")
-        .arg(flake_expression.as_ref())
-        .arg("--json")
-        // FIXME:
-        // The code that builds packages checks that it is actually present on the flake. This is probably a bad idea for nixpkgs, but for now I force all packages to be listed.
-        .arg("--legacy")
-        .arg("--reference-lock-file")
-        .arg("containix.lock")
-        .arg("--output-lock-file")
-        .arg("containix.lock")
-        .arg("--quiet");
-
-    let output = run_command(command).context("Running nix flake show")?;
-    let output: NixFlakeShowOutput = serde_json::from_str(&String::from_utf8(output.stdout)?)
-        .context("Analyzing nix flake show output")?;
-    Ok(output)
-}
-
-pub fn build_nix_flake(
-    flake_expression: impl AsRef<str>,
-    collection: impl AsRef<str>,
-    nix_system: &NixSystem,
-    package_name: impl AsRef<str>,
-) -> Result<NixFlakeBuildOutput> {
-    let package_name = package_name.as_ref();
-    let collection = collection.as_ref();
-    let flake_expression = flake_expression.as_ref();
-
-    let outputs = {
-        let mut command = Command::new("nix");
-        command
-            .arg("build")
-            .arg(&format!(
-                "{flake_expression}#{collection}.{nix_system}.{package_name}"
-            ))
-            .arg("--json")
-            .arg("--quiet")
-            .arg("--reference-lock-file")
-            .arg("containix.lock")
-            .arg("--output-lock-file")
-            .arg("containix.lock")
-            .arg("--no-link");
-
-        let output = run_command(command).context("Running nix build")?;
-        let mut output: Vec<NixFlakeBuildOutput> =
-            serde_json::from_str(&String::from_utf8(output.stdout)?)
-                .context("Analyzing nix build output")?;
-        trace!("nix build output: {output:?}");
-        output.swap_remove(0)
-    };
-
-    Ok(outputs)
 }

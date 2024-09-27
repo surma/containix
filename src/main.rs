@@ -1,19 +1,17 @@
 use std::{
     collections::HashSet,
-    ffi::{OsStr, OsString},
+    ffi::OsString,
     mem::ManuallyDrop,
     net::Ipv4Addr,
-    path::PathBuf,
 };
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use command_wrappers::Interface;
 use container::{ContainerFs, ContainerHandle, UnshareContainer};
-use nix_helpers::{ContainixFlake, NixFlake, NixStoreItem};
+use nix_helpers::{ContainixFlake, NixStoreItem};
 use serde::{Deserialize, Serialize};
-use tools::is_container;
-use tracing::{info, info_span, instrument, trace, warn};
+use tracing::{info, instrument, trace, warn};
 use tracing_subscriber::{fmt, EnvFilter};
 use volume_mount::VolumeMount;
 

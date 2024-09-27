@@ -9,6 +9,7 @@ pub fn is_container() -> bool {
 
 pub const NIXPKGS: &str = "github:nixos/nixpkgs/24.05";
 
+#[allow(dead_code)]
 pub struct Tool {
     pub output: String,
     pub bin: String,

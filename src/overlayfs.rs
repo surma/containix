@@ -5,7 +5,7 @@ use std::{
 };
 
 use anyhow::{bail, Context, Result};
-use derive_more::derive::{Deref, DerefMut};
+use derive_more::derive::Deref;
 use tracing::{debug, error, instrument, trace};
 use typed_builder::TypedBuilder;
 
@@ -116,7 +116,7 @@ impl<
         opts.push(lower_opt);
 
         if let Some(upper) = &ofs.upper {
-            std::fs::create_dir_all(&upper).context("Creating upper directory")?;
+            std::fs::create_dir_all(upper).context("Creating upper directory")?;
 
             let mut upper_opt = OsString::from("upperdir=");
             upper_opt.push(upper);
@@ -124,7 +124,7 @@ impl<
         }
 
         if let Some(work) = &ofs.work {
-            std::fs::create_dir_all(&work).context("Creating work directory")?;
+            std::fs::create_dir_all(work).context("Creating work directory")?;
             let mut work_opt = OsString::from("workdir=");
             work_opt.push(work);
             opts.push(work_opt);
@@ -176,18 +176,18 @@ mod tests {
 
         let target = tmpdir.path().join("target");
         {
-            let mut overlayfs = OverlayFs::builder()
+            let overlayfs = OverlayFs::builder()
                 .add_lower(tmpdir.path().join("lower_1"))
                 .add_lower(tmpdir.path().join("lower_2"))
                 .mount(target.clone())?;
-            assert!(std::fs::metadata(&overlayfs.join("a"))?.is_file());
-            assert!(std::fs::metadata(&overlayfs.join("a"))?.is_file());
-            assert!(std::fs::metadata(&overlayfs.join("b"))?.is_file());
+            assert!(std::fs::metadata(overlayfs.join("a"))?.is_file());
+            assert!(std::fs::metadata(overlayfs.join("a"))?.is_file());
+            assert!(std::fs::metadata(overlayfs.join("b"))?.is_file());
             assert!(std::fs::write(overlayfs.join("c"), "a_new").is_err());
         }
-        assert!(std::fs::metadata(&target.join("a"))
+        assert!(std::fs::metadata(target.join("a"))
             .is_err_and(|err| err.kind() == std::io::ErrorKind::NotFound));
-        assert!(std::fs::metadata(&target.join("b"))
+        assert!(std::fs::metadata(target.join("b"))
             .is_err_and(|err| err.kind() == std::io::ErrorKind::NotFound));
         Ok(())
     }
@@ -207,7 +207,7 @@ mod tests {
         ])?;
 
         let target = tmpdir.path().join("target");
-        let mut overlayfs = OverlayFs::builder()
+        let overlayfs = OverlayFs::builder()
             .add_lower(tmpdir.path().join("lower_1"))
             .add_lower(tmpdir.path().join("lower_2"))
             .mount(target.clone())?;
@@ -233,7 +233,7 @@ mod tests {
         ])?;
 
         let target = tmpdir.path().join("target");
-        let mut overlayfs = OverlayFs::builder()
+        let overlayfs = OverlayFs::builder()
             .add_lower(tmpdir.path().join("lower"))
             .upper(tmpdir.path().join("upper"))
             .work(tmpdir.path().join("work"))
@@ -269,7 +269,7 @@ mod tests {
         ])?;
 
         let target = tmpdir.path().join("target");
-        let mut overlayfs = OverlayFs::builder()
+        let overlayfs = OverlayFs::builder()
             .add_lower(tmpdir.path().join("lower"))
             .upper(tmpdir.path().join("upper"))
             .work(tmpdir.path().join("work"))

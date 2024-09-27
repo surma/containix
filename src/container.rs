@@ -1,20 +1,15 @@
 use anyhow::{Context, Result};
-use derive_more::derive::{Deref, DerefMut};
-use tracing::{instrument, trace};
+use derive_more::derive::Deref;
+use tracing::instrument;
 use typed_builder::TypedBuilder;
 
 use std::{
     ffi::{OsStr, OsString},
-    mem::ManuallyDrop,
-    os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
-    process::Command,
     sync::LazyLock,
 };
 
 use crate::{
-    command_wrappers::{bind_mount, unmount},
-    nix_helpers::NixStoreItem,
     overlayfs::{mount, MountGuard, OverlayFs, OverlayFsGuard},
     tools::TOOLS,
 };
@@ -43,6 +38,7 @@ pub struct ContainerFs {
     nix_mounts: Vec<PathBuf>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deref)]
 pub struct ContainerFsGuard {
     // Order is important here, as drop runs in order of declaration.
