@@ -182,6 +182,7 @@ impl FromStr for NixFlake {
 }
 
 impl NixFlake {
+    // FIXME: I hate the callback pattern here. Haven’t come up with a better design yet.
     #[instrument(level = "trace", skip_all)]
     pub fn build<F>(&self, f: F) -> Result<NixBuildResult>
     where
