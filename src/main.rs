@@ -10,7 +10,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use command_wrappers::Interface;
 use container::{ContainerFs, ContainerHandle, UnshareContainer};
-use nix_helpers::{NixFlake, NixStoreItem};
+use nix_helpers::{ContainixFlake, NixFlake, NixStoreItem};
 use serde::{Deserialize, Serialize};
 use tools::is_container;
 use tracing::{info, info_span, instrument, trace, warn};
@@ -49,15 +49,15 @@ enum Commands {
 #[derive(Parser, Debug)]
 struct BuildArgs {
     /// Nix flake container
-    #[arg(short = 'f', long = "flake", value_name = "NIX (FLAKE) FILE")]
-    flake: NixDerivation,
+    #[arg(short = 'f', long = "flake", value_name = "NIX FILE")]
+    flake: ContainixFlake,
 }
 
 #[derive(Parser, Debug)]
 struct RunArgs {
     /// Nix flake container
     #[arg(short = 'f', long = "flake", value_name = "NIX FLAKE")]
-    flake: NixFlake,
+    flake: ContainixFlake,
 
     /// Arguments to pass to the command.
     #[arg(trailing_var_arg = true)]
@@ -96,22 +96,22 @@ pub struct InterfaceConfig {
 }
 
 fn build_command(args: BuildArgs) -> Result<()> {
-    let store_item = build_container(&args.flake)?;
+    let store_item = args.flake.build()?;
     info!(
         "Container built successfully: {}",
-        store_item.path.display()
+        store_item.path().display()
     );
     Ok(())
 }
 
 fn run_command(args: RunArgs) -> Result<()> {
-    let store_item = build_container(&args.flake)?;
+    let store_item = args.flake.build()?;
     let closure = store_item.closure()?;
 
-    let mut container_fs = ContainerFs::build().rootfs(store_item.as_path());
+    let mut container_fs = ContainerFs::build().rootfs(store_item.path());
 
     for component in &closure {
-        container_fs = container_fs.expose_nix_item(component);
+        container_fs = container_fs.expose_nix_item(component.path());
     }
 
     for volume in &args.volumes {
@@ -151,7 +151,7 @@ fn run_command(args: RunArgs) -> Result<()> {
 
     let mut container_pid = container
         .spawn(
-            store_item.path.join("bin").join("containix"),
+            store_item.path().join("bin").join("containix"),
             ["container-init"],
             build_path_env(&config),
         )
@@ -172,13 +172,6 @@ fn run_command(args: RunArgs) -> Result<()> {
     }
 
     Ok(())
-}
-
-#[instrument(level = "trace", skip_all)]
-fn build_container(flake: &NixDerivation) -> Result<NixStoreItem> {
-    info!("Building flake container...");
-    let store_item = flake.build().context("Building flake container")?;
-    Ok(store_item)
 }
 
 #[instrument(level = "trace", ret)]
@@ -223,7 +216,7 @@ fn find_available_veth_name() -> Result<String> {
 }
 
 fn build_path_env(config: &ContainerConfig) -> OsString {
-    config.flake.path.join("bin").into()
+    config.flake.path().join("bin").into()
 }
 
 fn main() -> Result<()> {

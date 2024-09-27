@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 anyhow = "1.0.86"
 clap = { version = "4.5.16", features = ["derive"] }
+derive_builder = "0.20.1"
 derive_more = { version = "1.0.0", features = ["full"] }
 enum-as-inner = "0.6.0"
 serde = { version = "1.0.209", features = ["derive"] }

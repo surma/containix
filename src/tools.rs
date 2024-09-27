@@ -1,4 +1,4 @@
-use crate::nix_helpers::NixDerivation;
+use crate::nix_helpers::NixFlake;
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::sync::LazyLock;
@@ -10,13 +10,13 @@ pub fn is_container() -> bool {
 pub const NIXPKGS: &str = "github:nixos/nixpkgs/24.05";
 
 pub struct Tool {
-    pub component: String,
+    pub output: String,
     pub bin: String,
     pub path: OsString,
 }
 
 macro_rules! tools {
-    {$(($component:expr, $bin:literal)),*} => {
+    {$(($output:expr, $bin:literal)),*} => {
         pub static TOOLS: LazyLock<HashMap<String, Tool>> = LazyLock::new(|| {
             HashMap::from([
                 $(
@@ -24,10 +24,12 @@ macro_rules! tools {
                         let path = if is_container() {
                             $bin.into()
                         } else {
-                            NixDerivation::package_from_flake($component, NIXPKGS)
-                                .build()
-                                .expect(&format!("Nixpkgs must provide {}", $component))
-                                .as_path()
+                            NixFlake::output_from_flake($output, NIXPKGS)
+                                .build(|_|{})
+                                .expect(&format!("Nixpkgs must provide {}", $output))
+                                .get_bin()
+                                .expect(&format!("{} did not provide bin or out", $output))
+                                .path()
                                 .join("bin")
                                 .join($bin)
                                 .as_os_str()
@@ -39,7 +41,7 @@ macro_rules! tools {
                             $bin
                         );
                         (($bin).to_string(), Tool {
-                            component: $component.to_string(),
+                            output: $output.to_string(),
                             bin: $bin.to_string(),
                             path
                         })

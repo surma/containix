@@ -1,39 +1,83 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use derive_more::derive::{Deref, DerefMut, From};
-use enum_as_inner::EnumAsInner;
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Deserializer, Serialize};
 use std::{
     collections::{HashMap, HashSet},
+    ffi::OsStr,
     fmt::Display,
-    path::PathBuf,
+    path::{Component, Path, PathBuf},
     process::Command,
     str::FromStr,
 };
-use tracing::{debug, instrument, trace};
+use tracing::{debug, error, instrument, trace};
 
-use crate::command::run_command;
+use crate::{
+    cli_wrappers::nix::{FlakeOutputSymlink, NixBuild, NixEval},
+    command::run_command,
+};
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, From)]
-pub struct NixStoreItem {
-    pub name: String,
-    pub path: PathBuf,
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
+pub struct NixStoreItem(String);
+
+impl Into<PathBuf> for NixStoreItem {
+    fn into(self) -> PathBuf {
+        self.path()
+    }
+}
+
+impl<'de> Deserialize<'de> for NixStoreItem {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        use serde::de::Error;
+
+        let s = String::deserialize(deserializer)?;
+        Ok(NixStoreItem::try_from(s.as_str()).map_err(|err| D::Error::custom(err))?)
+    }
+}
+
+impl TryFrom<&str> for NixStoreItem {
+    type Error = anyhow::Error;
+    fn try_from(value: &str) -> Result<Self> {
+        let components: Vec<_> = value.split('/').collect();
+        let &["", "nix", "store", item] = components.as_slice() else {
+            bail!("{} is not a nix store item", value);
+        };
+        Ok(NixStoreItem(item.to_string()))
+    }
+}
+
+impl TryFrom<&Path> for NixStoreItem {
+    type Error = anyhow::Error;
+    fn try_from(value: &Path) -> Result<Self> {
+        let Some(str) = value.to_str() else {
+            bail!("Path {} contains non-utf8", value.display());
+        };
+        str.try_into()
+    }
 }
 
 impl NixStoreItem {
-    pub fn as_path(&self) -> PathBuf {
-        let mut path = PathBuf::new();
-        path.push("/");
-        path.push("nix");
-        path.push("store");
-        path.push(&self.path);
-        path
+    pub fn path(&self) -> PathBuf {
+        PathBuf::from("/nix/store").join(&self.0)
     }
 
-    #[instrument(level = "trace", skip_all, fields(path = %self.as_path().display()))]
-    pub fn closure(&self) -> Result<HashSet<PathBuf>> {
+    pub fn components(&self) -> (&str, &str) {
+        self.0
+            .split_once('-')
+            .unwrap_or_else(|| panic!("Invalid nix store path"))
+    }
+
+    pub fn name(&self) -> &str {
+        self.components().1
+    }
+
+    #[instrument(level = "trace", skip_all, fields(path = %self.path().display()))]
+    pub fn closure(&self) -> Result<HashSet<NixStoreItem>> {
         let output = Command::new("nix-store")
             .args(["--query", "--requisites"])
-            .arg(self.as_path())
+            .arg(self.path())
             .output()
             .context("Running nix-store query for closure")?;
 
@@ -46,10 +90,64 @@ impl NixStoreItem {
 
         let closure = String::from_utf8(output.stdout)?
             .lines()
-            .map(PathBuf::from)
-            .collect();
+            .map(NixStoreItem::try_from)
+            .collect::<Result<_>>()?;
 
         Ok(closure)
+    }
+}
+
+#[derive(Debug, Clone, Deref, DerefMut)]
+pub struct ContainixFlake(NixFlake);
+
+impl FromStr for ContainixFlake {
+    type Err = anyhow::Error;
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        Ok(ContainixFlake(s.parse()?))
+    }
+}
+
+impl ContainixFlake {
+    pub fn build(&self) -> Result<NixStoreItem> {
+        static DEFAULT_OUTPUT_NAMES: &[&str] = &["containix", "default"];
+
+        let c = if self.output().is_none() {
+            let system = get_nix_system()?;
+            let info = self.info()?;
+            let Some(packages) = info.packages.as_ref().and_then(|p| p.get(&system)) else {
+                bail!("Container flake has no packages for {}", system);
+            };
+            let Some(output) = DEFAULT_OUTPUT_NAMES
+                .iter()
+                .find(|name| packages.contains_key(**name))
+            else {
+                error!(
+                    "Container flake outputs ({}) do not contain one of the expected outputs ({})",
+                    packages
+                        .keys()
+                        .map(|v| v.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                    Vec::from(DEFAULT_OUTPUT_NAMES).join(", ")
+                );
+                bail!("Container flake does not provide expected output");
+            };
+            ContainixFlake(self.with_output(format!("packages.{system}.{output}")))
+        } else {
+            self.clone()
+        };
+
+        let build = c.0.build(|nix_cmd: &mut NixBuild| {
+            nix_cmd
+                .lock_file("containix.lock")
+                .symlink(FlakeOutputSymlink::None);
+        })?;
+
+        let Some(path) = build.get_bin() else {
+            bail!("Container flake did not provide a bin or out");
+        };
+
+        Ok(path.clone())
     }
 }
 
@@ -89,19 +187,39 @@ impl FromStr for NixFlake {
 
 impl NixFlake {
     #[instrument(level = "trace", skip_all)]
-    pub fn build(&self) -> Result<NixStoreItem> {
-        build_nix_flake_container(&self.flake, self.output.as_ref())
+    pub fn build<F>(&self, f: F) -> Result<NixBuildResult>
+    where
+        F: FnOnce(&mut NixBuild),
+    {
+        let mut nix_cmd = NixBuild::default();
+        nix_cmd.arg("build").arg(self.to_string()).json(true);
+        f(&mut nix_cmd);
+        let mut output: Vec<NixFlakeBuildOutput> = nix_cmd.run()?;
+
+        if output.len() > 1 {
+            debug!("{output:?}");
+            bail!("Flake unexpectedly built more than one output derivation");
+        }
+
+        Ok(NixBuildResult(output.swap_remove(0).outputs))
+    }
+
+    pub fn output(&self) -> Option<&str> {
+        self.output.as_ref().map(|v| v.as_str())
+    }
+
+    pub fn with_output(&self, package_name: impl AsRef<str>) -> Self {
+        NixFlake {
+            flake: self.flake.clone(),
+            output: Some(package_name.as_ref().to_string()),
+        }
     }
 
     #[instrument(level = "trace", skip_all)]
     pub fn info(&self) -> Result<NixFlakeShowOutput> {
-        let output: NixFlakeShowOutput = crate::cli_wrappers::nix::Nix::builder()
-            .arg("flake")
-            .arg("show")
-            .arg(self)
-            .json()
-            .run()?;
-
+        let mut nix_cmd = NixBuild::default();
+        nix_cmd.arg("flake").arg("show").arg(self).json(true);
+        let output: NixFlakeShowOutput = nix_cmd.run()?;
         Ok(output)
     }
 
@@ -110,6 +228,27 @@ impl NixFlake {
             flake: flake.as_ref().to_string(),
             output: Some(output_name.as_ref().to_string()),
         }
+    }
+}
+
+#[derive(Debug, Clone, Deref)]
+pub struct NixBuildResult(HashMap<String, NixStoreItem>);
+
+impl NixBuildResult {
+    pub fn get_out(&self) -> Option<&NixStoreItem> {
+        self.get("out")
+    }
+
+    pub fn get_bin(&self) -> Option<&NixStoreItem> {
+        self.get_or_out("bin")
+    }
+
+    /// Get a specified key or use `out` if it doesn’t exist.
+    pub fn get_or_out(&self, key: impl AsRef<str>) -> Option<&NixStoreItem> {
+        if let Some(out) = self.get(key.as_ref()) {
+            return Some(out);
+        }
+        self.get_out()
     }
 }
 
@@ -192,21 +331,15 @@ impl<'de> Deserialize<'de> for NixSystem {
 pub struct NixFlakeBuildOutput {
     #[serde(rename = "drvPath")]
     drv_path: PathBuf,
-    outputs: HashMap<String, PathBuf>,
+    outputs: HashMap<String, NixStoreItem>,
 }
 
 #[instrument(level = "trace", ret)]
 pub fn get_nix_system() -> Result<NixSystem> {
-    let mut command = Command::new("nix");
-    command
-        .arg("eval")
-        .arg("--impure")
-        .arg("--expr")
-        .arg("builtins.currentSystem");
+    let mut nix_cmd = NixEval::default();
+    nix_cmd.impure(true).expression("builtins.currentSystem");
 
-    let output = run_command(command).context("Running nix eval")?;
-    let system = serde_json::from_str(&String::from_utf8(output.stdout)?)
-        .context("Failed to parse nix system")?;
+    let system: NixSystem = nix_cmd.run()?;
     Ok(system)
 }
 
@@ -230,54 +363,6 @@ pub fn get_flake_info(flake_expression: impl AsRef<str>) -> Result<NixFlakeShowO
     let output: NixFlakeShowOutput = serde_json::from_str(&String::from_utf8(output.stdout)?)
         .context("Analyzing nix flake show output")?;
     Ok(output)
-}
-
-#[instrument(level = "trace", skip_all, fields(flake_expression = %flake_expression.as_ref(), output = %output.as_ref().map(|v| v.as_ref()).unwrap_or("")))]
-pub fn build_nix_flake_container(
-    flake_expression: impl AsRef<str>,
-    output: Option<impl AsRef<str>>,
-) -> Result<NixStoreItem> {
-    let flake_expression = flake_expression.as_ref();
-
-    let nix_system = get_nix_system()?;
-    let flake = get_flake_info(flake_expression)?;
-
-    let (package_collection, component, package) = if let Some(component) = output {
-        let component = component.as_ref().to_string();
-        flake
-            .find_package(&nix_system, &component)
-            .ok_or_else(|| anyhow!("No package named {component} found in flake"))?
-    } else {
-        flake
-            .find_package(&nix_system, "containix")
-            .or_else(|| flake.find_package(&nix_system, "default"))
-            .ok_or_else(|| anyhow!("No suitable package found in flake"))?
-    };
-    debug!("Building package {package_collection}.{component}");
-
-    let outputs = build_nix_flake(
-        flake_expression,
-        package_collection,
-        &nix_system,
-        &component,
-    )?;
-
-    let name = package
-        .get("name")
-        .and_then(|v| v.as_str())
-        .context("No name on flake output")?
-        .to_string();
-
-    let output = outputs
-        .outputs
-        .get("bin")
-        .or_else(|| outputs.outputs.get("out"))
-        .context("No output items called bin or out on flake")?;
-
-    Ok(NixStoreItem {
-        name,
-        path: output.clone(),
-    })
 }
 
 pub fn build_nix_flake(

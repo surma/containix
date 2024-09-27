@@ -1,63 +1,114 @@
 use std::{path::PathBuf, process::Command};
 
 use anyhow::{Context, Result};
-use serde::{de::DeserializeOwned, Deserialize};
-use typed_builder::TypedBuilder;
+use derive_builder::Builder;
+use derive_more::derive::From;
+use serde::de::DeserializeOwned;
 
 use crate::command::run_command;
 
-#[derive(Debug, TypedBuilder)]
-#[builder(mutators(
-    pub fn arg(&mut self, v: impl ToString) {
-        self.command.push(v.to_string());
-    }
-))]
-#[builder(build_method(name = finish, vis = ""))]
-pub struct Nix {
-    #[builder(via_mutators(init = vec![]))]
-    command: Vec<String>,
-    #[builder(setter(strip_bool))]
-    json: bool,
-    #[builder(default, setter(strip_option))]
-    lock_file: Option<PathBuf>,
-    #[builder(default = true)]
-    quiet: bool,
+#[derive(Debug, Clone, Default, From)]
+pub enum FlakeOutputSymlink {
+    None,
+    #[default]
+    Default,
+    Custom(#[from] PathBuf),
 }
 
-#[allow(dead_code, non_camel_case_types, missing_docs)]
-impl<
-        __json: ::typed_builder::Optional<bool>,
-        __lock_file: ::typed_builder::Optional<Option<PathBuf>>,
-        __quiet: ::typed_builder::Optional<bool>,
-    > NixBuilder<((Vec<String>,), __json, __lock_file, __quiet)>
-{
-    #[allow(
-        clippy::default_trait_access,
-        clippy::used_underscore_binding,
-        clippy::no_effect_underscore_binding
-    )]
-    pub fn run<I: DeserializeOwned>(self) -> Result<I> {
-        let cmd_opts = self.finish();
+#[derive(Debug, Builder)]
+#[builder(build_fn(name = finish, vis = ""))]
+#[builder(name = "NixBuild")]
+pub struct NixBuildOpt {
+    #[builder(setter(custom))]
+    arg: Vec<String>,
+    #[builder(default)]
+    json: bool,
+    #[builder(setter(into, strip_option), default)]
+    lock_file: Option<PathBuf>,
+    #[builder(default = "true")]
+    quiet: bool,
+    #[builder(default, setter(into))]
+    symlink: FlakeOutputSymlink,
+}
 
-        let mut command = Command::new("nix");
-        command.args(&cmd_opts.command);
-        if cmd_opts.json {
-            command.arg("--json");
+impl NixBuild {
+    pub fn arg(&mut self, arg: impl ToString) -> &mut Self {
+        self.arg.get_or_insert_with(|| vec![]).push(arg.to_string());
+        self
+    }
+
+    pub fn run<I: DeserializeOwned>(self) -> Result<I> {
+        let nix_opts = self.finish()?;
+
+        let mut cmd = Command::new("nix");
+        cmd.args(&nix_opts.arg);
+
+        if nix_opts.json {
+            cmd.arg("--json");
         }
-        if let Some(lock_file) = &cmd_opts.lock_file {
-            command
-                .arg("--reference-lock-file")
+
+        if let Some(lock_file) = &nix_opts.lock_file {
+            cmd.arg("--reference-lock-file")
                 .arg(lock_file)
                 .arg("--output-lock-file")
                 .arg(lock_file);
-        }
-        if cmd_opts.quiet {
-            command.arg("--quiet");
+        } else {
+            cmd.arg("--no-write-lock-file");
         }
 
-        let output = run_command(command).context("Running nix command")?;
+        if nix_opts.quiet {
+            cmd.arg("--quiet");
+        }
+
+        match nix_opts.symlink {
+            FlakeOutputSymlink::None => {
+                cmd.arg("--no-link");
+            }
+            FlakeOutputSymlink::Custom(symlink) => {
+                cmd.arg("--out-link").arg(symlink);
+            }
+            FlakeOutputSymlink::Default => {}
+        }
+
+        let output = run_command(cmd).context("Running nix command")?;
         let output = serde_json::from_str(&String::from_utf8(output.stdout)?)
-            .context("Parsin nix output")?;
+            .context("Parsing nix output")?;
+        Ok(output)
+    }
+}
+
+#[derive(Debug, Builder)]
+#[builder(build_fn(name = finish, vis = ""))]
+#[builder(name = "NixEval")]
+pub struct NixEvalOpt {
+    #[builder(default)]
+    impure: bool,
+    #[builder(default)]
+    json: bool,
+    #[builder(setter(into))]
+    expression: String,
+}
+
+impl NixEval {
+    pub fn run<I: DeserializeOwned>(self) -> Result<I> {
+        let nix_opts = self.finish()?;
+
+        let mut cmd = Command::new("nix");
+        cmd.arg("eval");
+
+        if nix_opts.json {
+            cmd.arg("--json");
+        }
+
+        if nix_opts.impure {
+            cmd.arg("--impure");
+        }
+
+        cmd.arg("--expr").arg(&nix_opts.expression);
+
+        let output = run_command(cmd).context("Running nix command")?;
+        let output = serde_json::from_str(&String::from_utf8(output.stdout)?)
+            .context("Parsing nix output")?;
         Ok(output)
     }
 }

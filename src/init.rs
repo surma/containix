@@ -34,7 +34,7 @@ pub fn initialize_container() -> Result<()> {
         interface.up()?;
     }
 
-    let err = Command::new(config.flake.path.join("bin").join(config.flake.name))
+    let err = Command::new(config.flake.path().join("bin").join(config.flake.name()))
         .args(config.args)
         .current_dir("/")
         .stdin(std::process::Stdio::inherit())
