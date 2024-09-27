@@ -53,62 +53,62 @@ impl NixStoreItem {
     }
 }
 
-#[derive(Debug, Clone, EnumAsInner)]
-pub enum NixDerivation {
-    FlakeExpression {
-        flake: String,
-        component: Option<String>,
-    },
+#[derive(Debug, Clone)]
+pub struct NixFlake {
+    flake: String,
+    output: Option<String>,
 }
 
-impl Display for NixDerivation {
+impl Display for NixFlake {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            NixDerivation::FlakeExpression {
-                flake,
-                component: None,
-            } => write!(f, "{}", flake),
-            NixDerivation::FlakeExpression {
-                flake,
-                component: Some(c),
-            } => write!(f, "{}#{}", flake, c),
+        write!(f, "{}", self.flake)?;
+        if let Some(output) = &self.output {
+            write!(f, "#{output}")?;
         }
+        Ok(())
     }
 }
 
-impl FromStr for NixDerivation {
+impl FromStr for NixFlake {
     type Err = anyhow::Error;
 
     fn from_str(s: &str) -> Result<Self> {
-        if s.contains('#') {
-            let (flake, component) = s.split_once('#').expect("Guaranteed by contains()");
-            Ok(NixDerivation::FlakeExpression {
+        if let Some((flake, output)) = s.split_once('#') {
+            Ok(Self {
                 flake: flake.to_string(),
-                component: Some(component.to_string()),
+                output: Some(output.to_string()),
             })
         } else {
-            Ok(NixDerivation::FlakeExpression {
+            Ok(Self {
                 flake: s.to_string(),
-                component: None,
+                output: None,
             })
         }
     }
 }
 
-impl NixDerivation {
+impl NixFlake {
     #[instrument(level = "trace", skip_all)]
     pub fn build(&self) -> Result<NixStoreItem> {
-        match self {
-            NixDerivation::FlakeExpression { flake, component } => {
-                build_nix_flake_container(flake, component.as_ref())
-            }
-        }
+        build_nix_flake_container(&self.flake, self.output.as_ref())
     }
 
-    pub fn package_from_flake(component_name: impl AsRef<str>, flake: impl AsRef<str>) -> Self {
-        NixDerivation::FlakeExpression {
+    #[instrument(level = "trace", skip_all)]
+    pub fn info(&self) -> Result<NixFlakeShowOutput> {
+        let output: NixFlakeShowOutput = crate::cli_wrappers::nix::Nix::builder()
+            .arg("flake")
+            .arg("show")
+            .arg(self)
+            .json()
+            .run()?;
+
+        Ok(output)
+    }
+
+    pub fn output_from_flake(output_name: impl AsRef<str>, flake: impl AsRef<str>) -> Self {
+        Self {
             flake: flake.as_ref().to_string(),
-            component: Some(component_name.as_ref().to_string()),
+            output: Some(output_name.as_ref().to_string()),
         }
     }
 }
@@ -232,17 +232,17 @@ pub fn get_flake_info(flake_expression: impl AsRef<str>) -> Result<NixFlakeShowO
     Ok(output)
 }
 
-#[instrument(level = "trace", skip_all, fields(flake_expression = %flake_expression.as_ref()))]
+#[instrument(level = "trace", skip_all, fields(flake_expression = %flake_expression.as_ref(), output = %output.as_ref().map(|v| v.as_ref()).unwrap_or("")))]
 pub fn build_nix_flake_container(
     flake_expression: impl AsRef<str>,
-    component: Option<impl AsRef<str>>,
+    output: Option<impl AsRef<str>>,
 ) -> Result<NixStoreItem> {
     let flake_expression = flake_expression.as_ref();
 
     let nix_system = get_nix_system()?;
     let flake = get_flake_info(flake_expression)?;
 
-    let (package_collection, component, package) = if let Some(component) = component {
+    let (package_collection, component, package) = if let Some(component) = output {
         let component = component.as_ref().to_string();
         flake
             .find_package(&nix_system, &component)

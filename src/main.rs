@@ -10,13 +10,14 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use command_wrappers::Interface;
 use container::{ContainerFs, ContainerHandle, UnshareContainer};
-use nix_helpers::{NixDerivation, NixStoreItem};
+use nix_helpers::{NixFlake, NixStoreItem};
 use serde::{Deserialize, Serialize};
 use tools::is_container;
 use tracing::{info, info_span, instrument, trace, warn};
 use tracing_subscriber::{fmt, EnvFilter};
 use volume_mount::VolumeMount;
 
+mod cli_wrappers;
 mod command;
 mod command_wrappers;
 mod container;
@@ -55,8 +56,8 @@ struct BuildArgs {
 #[derive(Parser, Debug)]
 struct RunArgs {
     /// Nix flake container
-    #[arg(short = 'f', long = "flake", value_name = "NIX (FLAKE) FILE")]
-    flake: NixDerivation,
+    #[arg(short = 'f', long = "flake", value_name = "NIX FLAKE")]
+    flake: NixFlake,
 
     /// Arguments to pass to the command.
     #[arg(trailing_var_arg = true)]
