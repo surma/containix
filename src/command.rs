@@ -5,7 +5,7 @@ use std::{
 };
 
 use anyhow::Result;
-use tracing::{debug, error, instrument};
+use tracing::{debug, error, instrument, trace};
 
 pub fn resolve_command(command: impl AsRef<OsStr>) -> PathBuf {
     let command = command.as_ref();
@@ -37,7 +37,7 @@ pub fn run_command(command: Command) -> Result<Output> {
     new_command.stdout(std::process::Stdio::piped());
     new_command.stderr(std::process::Stdio::piped());
     let output = new_command.output()?;
-    debug!("Command {command:?} output: {output:?}");
+    trace!("Command {command:?} output: {output:?}");
     if !output.status.success() {
         let stderr = String::from_utf8(output.stderr)
             .unwrap_or_else(|_| "<Invalid UTF-8 on stderr>".to_string());

@@ -33,7 +33,9 @@ pub struct NixBuildOpt {
 
 impl NixBuild {
     pub fn arg(&mut self, arg: impl ToString) -> &mut Self {
-        self.arg.get_or_insert_with(std::vec::Vec::new).push(arg.to_string());
+        self.arg
+            .get_or_insert_with(std::vec::Vec::new)
+            .push(arg.to_string());
         self
     }
 

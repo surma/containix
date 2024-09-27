@@ -1,6 +1,6 @@
 use anyhow::{bail, Context, Result};
 use derive_more::derive::{Deref, DerefMut};
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::{
     collections::{HashMap, HashSet},
     fmt::Display,
@@ -15,27 +15,31 @@ use crate::cli_wrappers::nix::{FlakeOutputSymlink, NixBuild, NixEval};
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
 pub struct NixStoreItem(String);
 
+impl<'de> Deserialize<'de> for NixStoreItem {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(deserializer)?;
+        NixStoreItem::try_from(s.as_str()).map_err(serde::de::Error::custom)
+    }
+}
+
 impl From<NixStoreItem> for PathBuf {
     fn from(val: NixStoreItem) -> Self {
         val.path()
     }
 }
 
-impl<'de> Deserialize<'de> for NixStoreItem {
-    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        use serde::de::Error;
-
-        let s = String::deserialize(deserializer)?;
-        NixStoreItem::try_from(s.as_str()).map_err(D::Error::custom)
+impl Display for NixStoreItem {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.path().display())
     }
 }
 
 impl TryFrom<&str> for NixStoreItem {
     type Error = anyhow::Error;
     fn try_from(value: &str) -> Result<Self> {
+        if !value.starts_with("/nix/store/") && !value.contains('/') {
+            return Ok(NixStoreItem(value.to_string()));
+        }
         let components: Vec<_> = value.split('/').collect();
         let &["", "nix", "store", item] = components.as_slice() else {
             bail!("{} is not a nix store item", value);

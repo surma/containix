@@ -1,9 +1,4 @@
-use std::{
-    collections::HashSet,
-    ffi::OsString,
-    mem::ManuallyDrop,
-    net::Ipv4Addr,
-};
+use std::{collections::HashSet, ffi::OsString, mem::ManuallyDrop, net::Ipv4Addr};
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -11,7 +6,7 @@ use command_wrappers::Interface;
 use container::{ContainerFs, ContainerHandle, UnshareContainer};
 use nix_helpers::{ContainixFlake, NixStoreItem};
 use serde::{Deserialize, Serialize};
-use tracing::{info, instrument, trace, warn};
+use tracing::{debug, info, instrument, trace, warn};
 use tracing_subscriber::{fmt, EnvFilter};
 use volume_mount::VolumeMount;
 
@@ -102,6 +97,19 @@ fn build_command(args: BuildArgs) -> Result<()> {
     Ok(())
 }
 
+fn enter_root_ns() -> Result<()> {
+    info!("Create namespace with root permissions");
+    let uid = nix::unistd::getuid();
+    let gid = nix::unistd::getgid();
+    nix::sched::unshare(
+        nix::sched::CloneFlags::CLONE_NEWUSER.union(nix::sched::CloneFlags::CLONE_NEWNS),
+    )?;
+    std::fs::write("/proc/self/setgroups", "deny")?;
+    std::fs::write("/proc/self/uid_map", format!("0 {uid} 1"))?;
+    std::fs::write("/proc/self/gid_map", format!("0 {gid} 1"))?;
+    Ok(())
+}
+
 fn run_command(args: RunArgs) -> Result<()> {
     let store_item = args.flake.build()?;
     let closure = store_item.closure()?;
@@ -115,6 +123,8 @@ fn run_command(args: RunArgs) -> Result<()> {
     for volume in &args.volumes {
         container_fs = container_fs.add_volume_mount(&volume.host_path, &volume.container_path);
     }
+
+    enter_root_ns()?;
     let container_fs = container_fs.create()?;
     info!("Container root: {}", container_fs.display());
 
@@ -220,7 +230,6 @@ fn build_path_env(config: &ContainerConfig) -> OsString {
 fn main() -> Result<()> {
     fmt()
         .with_env_filter(EnvFilter::from_default_env())
-        .with_target(false)
         .with_writer(std::io::stderr)
         .init();
 

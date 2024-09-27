@@ -34,7 +34,7 @@ pub fn mount(
 
     let target = target.as_ref().to_path_buf();
     cmd.arg(&target);
-    debug!("Running mount command: {:?}", cmd);
+    trace!("Running mount command: {:?}", cmd);
 
     let output = cmd.output()?;
     if !output.status.success() {

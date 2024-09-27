@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use derive_more::derive::Deref;
-use tracing::instrument;
+use tracing::{info, instrument};
 use typed_builder::TypedBuilder;
 
 use std::{

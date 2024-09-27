@@ -1,6 +1,7 @@
-use std::{os::unix::process::CommandExt, process::Command, time::Duration};
+use std::{io::Read, os::unix::process::CommandExt, process::Command, time::Duration};
 
 use anyhow::{Context, Result};
+use tracing::{debug, info, trace};
 
 use crate::{command_wrappers::Interface, ContainerConfig};
 
@@ -18,15 +19,15 @@ pub fn poll<T>(duration: Duration, wait: Duration, f: impl Fn() -> Result<Option
 }
 
 pub fn initialize_container() -> Result<()> {
-    tracing::info!("Starting containix in container");
-    tracing::trace!("env = {:?}", std::env::vars());
+    info!("Starting containix in container");
+    trace!("env = {:?}", std::env::vars());
     let config_path =
         std::fs::File::open("/containix.config.json").context("Opening container config")?;
     let config: ContainerConfig =
         serde_json::from_reader(config_path).context("Parsing container config")?;
 
     if let Some(network_config) = &config.interface {
-        tracing::info!("Waiting for network interface {}", network_config.name);
+        info!("Waiting for network interface {}", network_config.name);
         let interface = poll(Duration::from_secs(10), Duration::from_millis(100), || {
             Interface::by_name(&network_config.name)
         })?;
