@@ -1,22 +1,16 @@
-use std::{
-    collections::HashSet,
-    ffi::{OsStr, OsString},
-    mem::ManuallyDrop,
-    net::Ipv4Addr,
-    path::PathBuf,
-};
+use std::{collections::HashSet, ffi::OsString, mem::ManuallyDrop, net::Ipv4Addr};
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use command_wrappers::Interface;
 use container::{ContainerFs, ContainerHandle, UnshareContainer};
-use nix_helpers::{NixDerivation, NixStoreItem};
+use nix_helpers::{ContainixFlake, NixStoreItem};
 use serde::{Deserialize, Serialize};
-use tools::is_container;
-use tracing::{info, info_span, instrument, trace, warn};
-use tracing_subscriber::{fmt, EnvFilter};
+use tracing::{debug, info, instrument, trace, warn};
+use tracing_subscriber::{fmt, fmt::format::FmtSpan, EnvFilter};
 use volume_mount::VolumeMount;
 
+mod cli_wrappers;
 mod command;
 mod command_wrappers;
 mod container;
@@ -48,15 +42,15 @@ enum Commands {
 #[derive(Parser, Debug)]
 struct BuildArgs {
     /// Nix flake container
-    #[arg(short = 'f', long = "flake", value_name = "NIX (FLAKE) FILE")]
-    flake: NixDerivation,
+    #[arg(short = 'f', long = "flake", value_name = "NIX FILE")]
+    flake: ContainixFlake,
 }
 
 #[derive(Parser, Debug)]
 struct RunArgs {
     /// Nix flake container
-    #[arg(short = 'f', long = "flake", value_name = "NIX (FLAKE) FILE")]
-    flake: NixDerivation,
+    #[arg(short = 'f', long = "flake", value_name = "NIX FLAKE")]
+    flake: ContainixFlake,
 
     /// Arguments to pass to the command.
     #[arg(trailing_var_arg = true)]
@@ -94,28 +88,47 @@ pub struct InterfaceConfig {
     netmask: Ipv4Addr,
 }
 
+#[instrument(level = "trace", skip_all)]
 fn build_command(args: BuildArgs) -> Result<()> {
-    let store_item = build_container(&args.flake)?;
+    let store_item = args.flake.build()?;
     info!(
         "Container built successfully: {}",
-        store_item.path.display()
+        store_item.path().display()
     );
     Ok(())
 }
 
-fn run_command(args: RunArgs) -> Result<()> {
-    let store_item = build_container(&args.flake)?;
-    let closure = store_item.closure()?;
+#[instrument(level = "trace", skip_all)]
+fn enter_root_ns() -> Result<()> {
+    let uid = nix::unistd::getuid();
+    let gid = nix::unistd::getgid();
+    nix::sched::unshare(
+        nix::sched::CloneFlags::CLONE_NEWUSER.union(nix::sched::CloneFlags::CLONE_NEWNS),
+    )?;
+    std::fs::write("/proc/self/setgroups", "deny")?;
+    std::fs::write("/proc/self/uid_map", format!("0 {uid} 1"))?;
+    std::fs::write("/proc/self/gid_map", format!("0 {gid} 1"))?;
+    Ok(())
+}
 
-    let mut container_fs = ContainerFs::build().rootfs(store_item.as_path());
+#[instrument(level = "trace", skip_all)]
+fn run_command(args: RunArgs) -> Result<()> {
+    info!("Building container {}", args.flake);
+    let store_item = args.flake.build()?;
+    let closure = store_item.closure()?;
+    debug!("Dependency closure: {closure:?}");
+
+    let mut container_fs = ContainerFs::build().rootfs(store_item.path());
 
     for component in &closure {
-        container_fs = container_fs.expose_nix_item(component);
+        container_fs = container_fs.expose_nix_item(component.path());
     }
 
     for volume in &args.volumes {
         container_fs = container_fs.add_volume_mount(&volume.host_path, &volume.container_path);
     }
+
+    enter_root_ns()?;
     let container_fs = container_fs.create()?;
     info!("Container root: {}", container_fs.display());
 
@@ -150,7 +163,7 @@ fn run_command(args: RunArgs) -> Result<()> {
 
     let mut container_pid = container
         .spawn(
-            store_item.path.join("bin").join("containix"),
+            store_item.path().join("bin").join("containix"),
             ["container-init"],
             build_path_env(&config),
         )
@@ -171,13 +184,6 @@ fn run_command(args: RunArgs) -> Result<()> {
     }
 
     Ok(())
-}
-
-#[instrument(level = "trace", skip_all)]
-fn build_container(flake: &NixDerivation) -> Result<NixStoreItem> {
-    info!("Building flake container...");
-    let store_item = flake.build().context("Building flake container")?;
-    Ok(store_item)
 }
 
 #[instrument(level = "trace", ret)]
@@ -222,13 +228,13 @@ fn find_available_veth_name() -> Result<String> {
 }
 
 fn build_path_env(config: &ContainerConfig) -> OsString {
-    config.flake.path.join("bin").into()
+    config.flake.path().join("bin").into()
 }
 
 fn main() -> Result<()> {
     fmt()
+        .with_span_events(FmtSpan::ENTER | FmtSpan::EXIT)
         .with_env_filter(EnvFilter::from_default_env())
-        .with_target(false)
         .with_writer(std::io::stderr)
         .init();
 

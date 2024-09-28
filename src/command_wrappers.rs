@@ -11,34 +11,7 @@ use std::{
 
 use crate::{command::run_command, tools::TOOLS};
 
-pub fn bind_mount(src: impl AsRef<Path>, dst: impl AsRef<Path>, read_only: bool) -> Result<()> {
-    static MOUNT: LazyLock<OsString> = LazyLock::new(|| TOOLS.get("mount").unwrap().path.clone());
-    let src = src.as_ref();
-    let dst = dst.as_ref();
-
-    let mut command = std::process::Command::new(&*MOUNT);
-    command.arg("-o");
-    if read_only {
-        command.arg("bind,ro");
-    } else {
-        command.arg("bind");
-    }
-    command.arg(src);
-    command.arg(dst);
-    run_command(command)?;
-
-    Ok(())
-}
-
-pub fn unmount(path: impl AsRef<Path>) -> Result<()> {
-    static UMOUNT: LazyLock<OsString> = LazyLock::new(|| TOOLS.get("umount").unwrap().path.clone());
-    let path = path.as_ref();
-    let mut command = std::process::Command::new(&*UMOUNT);
-    command.arg(path);
-    run_command(command)?;
-    Ok(())
-}
-
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 pub struct Interface {
     #[serde(rename = "ifindex")]
@@ -51,6 +24,7 @@ pub struct Interface {
     pub addresses: Vec<InterfaceAddress>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize, EnumAsInner)]
 #[serde(tag = "family")]
 pub enum InterfaceAddress {
@@ -62,6 +36,7 @@ pub enum InterfaceAddress {
     Other,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize, Deref)]
 pub struct Ipv4Address {
     #[deref]
@@ -69,6 +44,8 @@ pub struct Ipv4Address {
     pub prefixlen: u32,
     pub broadcast: Option<Ipv4Addr>,
 }
+
+#[allow(dead_code)]
 #[derive(Debug, Deserialize, Deref)]
 pub struct Ipv6Address {
     #[deref]
@@ -79,6 +56,7 @@ pub struct Ipv6Address {
 
 static IP: LazyLock<OsString> = LazyLock::new(|| TOOLS.get("ip").unwrap().path.clone());
 
+#[allow(dead_code)]
 impl Interface {
     pub fn index(&self) -> u32 {
         self.index
