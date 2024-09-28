@@ -34,7 +34,7 @@
           name = "simple-container";
           paths = [
             (writeShellScriptBin "simple-container" ''
-              # echo -e "\n# Mounts"
+              echo -e "\n# Mounts"
               mount
               echo -e "\n# Environment"
               env
