@@ -162,7 +162,11 @@ fn containix_run(args: RunArgs) -> Result<()> {
     .context("Writing container config")?;
 
     let invocation = if args.args.is_empty() {
-        let cmd = config.flake.path().join("bin").join(config.flake.name());
+        let cmd = config
+            .flake
+            .path()
+            .join("bin")
+            .join("containix-entry-point");
         let Some(cmd) = cmd.to_str() else {
             anyhow::bail!("Container flake name contains invalid utf-8");
         };

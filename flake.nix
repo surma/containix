@@ -38,15 +38,29 @@
             })
           ];
         };
-        inherit (pkgs) callPackage;
+        inherit (pkgs) callPackage buildEnv;
 
         crate2nix' = callPackage (import "${crate2nix}/tools.nix") { };
       in
-      {
-        packages = rec {
-          default = containix;
+      rec {
+        packages = {
+          default = packages.containix;
           containix = callPackage (import ./default.nix) { crate2nix = crate2nix'; };
-          base = callPackage (import ./containix-base.nix) { inherit containix; };
+          container-tools = callPackage (import ./container-tools.nix) { };
+        };
+
+        lib = {
+          containerFS =
+            {
+              extraPackages ? [ ],
+            }:
+            buildEnv {
+              name = "container-fs";
+              paths = extraPackages ++ [
+                packages.container-tools
+                packages.containix
+              ];
+            };
         };
       }
     );

@@ -22,18 +22,13 @@
       system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
-        inherit (pkgs)
-          mkShell
-          buildEnv
-          writeShellScriptBin
-          callPackage
-          ;
+        inherit (pkgs) writeShellScriptBin;
+        inherit (containix.lib.${system}) containerFS;
       in
       rec {
-        packages.default = buildEnv {
-          name = "simple-container";
-          paths = [
-            (writeShellScriptBin "simple-container" ''
+        packages.default = containerFS {
+          extraPackages = [
+            (writeShellScriptBin "containix-entry-point" ''
               echo -e "\n# Mounts"
               mount
               echo -e "\n# Environment"
@@ -44,17 +39,6 @@
               ls -alh ''${1:-/}
               exec /bin/bash
             '')
-            containix.packages.${system}.base
-          ];
-        };
-        apps.default = flake-utils.lib.mkApp { drv = packages.default; };
-        devShell = mkShell {
-          buildInputs = with pkgs; [
-            nix
-            rustc
-            cargo
-            pkg-config
-            glibc
           ];
         };
       }
