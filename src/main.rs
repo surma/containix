@@ -2,7 +2,6 @@ use std::{collections::HashSet, ffi::OsString, mem::ManuallyDrop, net::Ipv4Addr}
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use command_wrappers::Interface;
 use container::{ContainerFs, ContainerHandle, UnshareContainer};
 use nix_helpers::{ContainixFlake, NixStoreItem};
 use serde::{Deserialize, Serialize};
@@ -12,10 +11,7 @@ use volume_mount::VolumeMount;
 
 mod cli_wrappers;
 mod command;
-mod command_wrappers;
 mod container;
-mod init;
-mod network_config;
 mod nix_helpers;
 mod overlayfs;
 mod tools;
@@ -34,9 +30,6 @@ enum Commands {
     Build(BuildArgs),
     /// Run a Nix flake container
     Run(RunArgs),
-    /// Initialize the container (hidden from user)
-    #[command(hide = true)]
-    ContainerInit,
 }
 
 #[derive(Parser, Debug)]
@@ -60,32 +53,9 @@ struct RunArgs {
     #[arg(short = 'v', long = "volume", value_name = "HOST_PATH:CONTAINER_PATH")]
     volumes: Vec<VolumeMount>,
 
-    /// Network configuration for the container.
-    #[arg(
-        short = 'n',
-        long = "network",
-        value_name = "HOST_IP+CONTAINER_IP/NETMASK"
-    )]
-    network: Option<network_config::NetworkConfig>,
-
     /// Keep the container root directory after the command has run.
     #[arg(short = 'k', long = "keep")]
     keep_container: bool,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ContainerConfig {
-    pub flake: NixStoreItem,
-    pub args: Vec<String>,
-    pub interface: Option<InterfaceConfig>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct InterfaceConfig {
-    name: String,
-    address: Ipv4Addr,
-    netmask: Ipv4Addr,
 }
 
 #[instrument(level = "trace", skip_all)]
@@ -135,44 +105,14 @@ fn containix_run(args: RunArgs) -> Result<()> {
     let mut container = UnshareContainer::new(container_fs)?;
     container.set_keep(args.keep_container);
 
-    let mut config = ContainerConfig {
-        flake: store_item.clone(),
-        args: args.args.clone(),
-        interface: Default::default(),
-    };
-
-    let interfaces = if let Some(network) = &args.network {
-        container.set_netns(true);
-        let (host_veth, container_veth) = setup_network(network)?;
-        config.interface = Some(InterfaceConfig {
-            name: container_veth.name().to_string(),
-            address: network.container_address,
-            netmask: network.netmask,
-        });
-        Some((host_veth, container_veth))
-    } else {
-        None
-    };
-
-    serde_json::to_writer_pretty(
-        std::fs::File::create(container.root().join("containix.config.json"))
-            .context("Creating container config file")?,
-        &config,
-    )
-    .context("Writing container config")?;
-
     let invocation = if args.args.is_empty() {
-        let cmd = config
-            .flake
-            .path()
-            .join("bin")
-            .join("containix-entry-point");
+        let cmd = store_item.path().join("bin").join("containix-entry-point");
         let Some(cmd) = cmd.to_str() else {
             anyhow::bail!("Container flake name contains invalid utf-8");
         };
         vec![cmd.to_string()]
     } else {
-        config.args.clone()
+        args.args.clone()
     };
 
     let mut container_pid = container
@@ -181,14 +121,9 @@ fn containix_run(args: RunArgs) -> Result<()> {
                 .get(0)
                 .expect("guaranteed to have at least 1 element by code above"),
             &invocation[1..],
-            build_path_env(&config),
+            store_item.path().join("bin"),
         )
         .context("Spawning container")?;
-
-    if let Some((veth_host, veth_container)) = &interfaces {
-        veth_host.up()?;
-        veth_container.set_ns(container_pid.pid().to_string())?;
-    }
 
     container_pid
         .wait()
@@ -200,51 +135,6 @@ fn containix_run(args: RunArgs) -> Result<()> {
     }
 
     Ok(())
-}
-
-#[instrument(level = "trace", ret)]
-fn setup_network(network: &network_config::NetworkConfig) -> Result<(Interface, Interface)> {
-    info!("Configuring network");
-    let available_interface_name =
-        find_available_veth_name().context("Finding available veth interface")?;
-    trace!("Using {available_interface_name} for container interface");
-    let (veth_host, veth_container) = Interface::create_veth(
-        &available_interface_name,
-        format!("{available_interface_name}-peer"),
-    )
-    .context("Creating veth interface")?;
-    trace!(
-        "Setting host interface ({}) address to {}/{}",
-        veth_host.name(),
-        network.host_address.to_string(),
-        network.netmask.to_string()
-    );
-    veth_host
-        .set_address(&network.host_address, &network.netmask)
-        .context("Setting host interface address")?;
-
-    // We don’t need to clean up these interfaces.
-    // The container interface will be cleaned up when the container exits,
-    // as the kernel will remove the namespace.
-    // The host interface will be cleaned up as a veth pair is deleted when one end is deleted.
-    Ok((veth_host, veth_container))
-}
-
-fn find_available_veth_name() -> Result<String> {
-    let interface_names: HashSet<_> = Interface::all()?
-        .into_iter()
-        .map(|i| i.name().to_string())
-        .collect();
-    let Some(available_interface_index) =
-        (0..100).find(|i| !interface_names.contains(&format!("veth{i}")))
-    else {
-        anyhow::bail!("No available names for veth interface");
-    };
-    Ok(format!("veth{available_interface_index}"))
-}
-
-fn build_path_env(config: &ContainerConfig) -> OsString {
-    config.flake.path().join("bin").into()
 }
 
 fn main() -> Result<()> {
@@ -265,6 +155,5 @@ fn main() -> Result<()> {
     match cli.command {
         Commands::Build(args) => containix_build(args),
         Commands::Run(args) => containix_run(args),
-        Commands::ContainerInit => init::initialize_container(),
     }
 }

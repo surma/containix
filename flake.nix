@@ -38,7 +38,7 @@
             })
           ];
         };
-        inherit (pkgs) callPackage buildEnv;
+        inherit (pkgs) callPackage buildEnv writeShellScriptBin;
 
         crate2nix' = callPackage (import "${crate2nix}/tools.nix") { };
       in
@@ -46,22 +46,9 @@
         packages = {
           default = packages.containix;
           containix = callPackage (import ./default.nix) { crate2nix = crate2nix'; };
-          container-tools = callPackage (import ./container-tools.nix) { };
         };
 
-        lib = {
-          containerFS =
-            {
-              extraPackages ? [ ],
-            }:
-            buildEnv {
-              name = "container-fs";
-              paths = extraPackages ++ [
-                packages.container-tools
-                packages.containix
-              ];
-            };
-        };
+        lib = callPackage (import ./lib.nix) { };
       }
     );
 }

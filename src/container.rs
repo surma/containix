@@ -119,16 +119,11 @@ impl AsRef<Path> for ContainerFsGuard {
 pub struct UnshareContainer<T: AsRef<Path>> {
     root: T,
     keep: bool,
-    netns: bool,
 }
 
 impl<T: AsRef<Path>> UnshareContainer<T> {
     pub fn new(root: T) -> Result<Self> {
-        Ok(Self {
-            root,
-            keep: false,
-            netns: false,
-        })
+        Ok(Self { root, keep: false })
     }
 
     pub fn set_keep(&mut self, keep: bool) {
@@ -137,10 +132,6 @@ impl<T: AsRef<Path>> UnshareContainer<T> {
 
     pub fn root(&self) -> &Path {
         self.root.as_ref()
-    }
-
-    pub fn set_netns(&mut self, netns: bool) {
-        self.netns = netns;
     }
 
     pub fn spawn(
@@ -158,9 +149,6 @@ impl<T: AsRef<Path>> UnshareContainer<T> {
         unshare.arg("--mount");
         unshare.arg("--pid");
         unshare.arg("--ipc");
-        if self.netns {
-            unshare.arg("--net");
-        }
         unshare.arg("--mount-proc=/proc");
         unshare.arg("--map-root-user");
         unshare.arg(command.as_ref());

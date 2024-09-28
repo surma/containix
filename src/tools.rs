@@ -56,6 +56,5 @@ macro_rules! tools {
 tools! {
     ("util-linux", "mount"),
     ("util-linux", "umount"),
-    ("iproute2", "ip"),
     ("util-linux", "unshare")
 }
