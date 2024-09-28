@@ -89,7 +89,7 @@ pub struct InterfaceConfig {
 }
 
 #[instrument(level = "trace", skip_all)]
-fn build_command(args: BuildArgs) -> Result<()> {
+fn containix_build(args: BuildArgs) -> Result<()> {
     let store_item = args.flake.build()?;
     info!(
         "Container built successfully: {}",
@@ -112,7 +112,7 @@ fn enter_root_ns() -> Result<()> {
 }
 
 #[instrument(level = "trace", skip_all)]
-fn run_command(args: RunArgs) -> Result<()> {
+fn containix_run(args: RunArgs) -> Result<()> {
     info!("Building container {}", args.flake);
     let store_item = args.flake.build()?;
     let closure = store_item.closure()?;
@@ -137,7 +137,7 @@ fn run_command(args: RunArgs) -> Result<()> {
 
     let mut config = ContainerConfig {
         flake: store_item.clone(),
-        args: args.args,
+        args: args.args.clone(),
         interface: Default::default(),
     };
 
@@ -161,10 +161,22 @@ fn run_command(args: RunArgs) -> Result<()> {
     )
     .context("Writing container config")?;
 
+    let invocation = if args.args.is_empty() {
+        let cmd = config.flake.path().join("bin").join(config.flake.name());
+        let Some(cmd) = cmd.to_str() else {
+            anyhow::bail!("Container flake name contains invalid utf-8");
+        };
+        vec![cmd.to_string()]
+    } else {
+        config.args.clone()
+    };
+
     let mut container_pid = container
         .spawn(
-            store_item.path().join("bin").join("containix"),
-            ["container-init"],
+            invocation
+                .get(0)
+                .expect("guaranteed to have at least 1 element by code above"),
+            &invocation[1..],
             build_path_env(&config),
         )
         .context("Spawning container")?;
@@ -247,8 +259,8 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Build(args) => build_command(args),
-        Commands::Run(args) => run_command(args),
+        Commands::Build(args) => containix_build(args),
+        Commands::Run(args) => containix_run(args),
         Commands::ContainerInit => init::initialize_container(),
     }
 }
