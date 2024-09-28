@@ -2,11 +2,9 @@
 
 Containix is a replacement(-ish) for Docker, using [Nix Flakes] as the container specification.
 
-By running `containix -f /path/to/flake`, Containix will build the default package of the flake, determine the transitive closure of dependencies, and create a container with a read-only nix store with _only_ those dependencies. Then, similar to `nix run`, it will execute the binary with the same name as the default package’s derivation name.
+By running `containix run -f /path/to/flake`, Containix will build the default package of the flake, determine the transitive closure of dependencies, and create a container with a read-only nix store with _only_ those dependencies. If no command is specified, `containix-entry-point` will be run, otherwise the specified command and arguments will be used.
 
-Take a look at the [examples](./example/) to get started.
-
-> NB: If you use `--network`, Containix requires the `ip` tool from the `iproute2` package to be present inside the container.
+Take a look at the [examples](./examples/) to get started.
 
 ## Installation
 
@@ -21,16 +19,22 @@ $ nix run github:surma/containix
 Run a flake inside a container:
 
 ```console
-$ containix -f /path/to/flake
+$ containix run -f /path/to/flake
 ```
 
-Mount a host directory into the container and create a subnet where 10.0.0.1 is the host and 10.0.0.2 is the container:
+Run MySQL inside a container:
 
 ```console
-$ containix -f /path/to/flake --volume $PWD:/workdir --network 10.0.0.1+10.0.0.2/8
+$ containix run -f 'github:nixos/nixpkgs/24.05#mysql' -- mysql --version
 ```
 
-Since containers are flakes, you can run the examples in this repository as follows:
+Mount a host directory into the container:
+
+```console
+$ containix run -f /path/to/flake --volume $PWD:/workdir
+```
+
+Since containers are flakes, you can run the examples from this repository as follows:
 
 ```console
 $ containix -f 'github:surma/containix?dir=examples/simple_container'
