@@ -1,20 +1,14 @@
-{
-  rustPlatform,
-  lib,
-  system,
-}:
+{ lib, crate2nix }:
 let
   toml = builtins.fromTOML (builtins.readFile ./Cargo.toml);
-in
-rustPlatform.buildRustPackage {
-  pname = toml.package.name;
-  version = toml.package.version;
   src = lib.sources.sourceByRegex ./. [
     "Cargo\.(lock|toml)"
     "src(/.*\.rs)?"
   ];
-  cargoLock = {
-    lockFile = ./Cargo.lock;
+
+  cargoNix = crate2nix.appliedCargoNix {
+    name = toml.package.name;
+    inherit src;
   };
-  doCheck = false;
-}
+in
+cargoNix.rootCrate.build

@@ -8,6 +8,7 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
     flake-utils.url = "github:numtide/flake-utils";
+    crate2nix.url = "github:nix-community/crate2nix";
   };
 
   outputs =
@@ -16,6 +17,7 @@
       nixpkgs,
       flake-utils,
       fenix,
+      crate2nix,
     }:
     let
       inherit (flake-utils.lib) eachSystem system;
@@ -26,15 +28,24 @@
     eachSystem linuxSystems (
       system:
       let
-        pkgs = nixpkgs.legacyPackages.${system};
+        toolchain = fenix.packages.${system}.stable.defaultToolchain;
+        pkgs = import nixpkgs {
+          inherit system;
+          overlays = [
+            (final: prev: {
+              rustc = toolchain;
+              cargo = toolchain;
+            })
+          ];
+        };
         inherit (pkgs) callPackage;
+
+        crate2nix' = callPackage (import "${crate2nix}/tools.nix") { };
       in
       {
         packages = rec {
           default = containix;
-          containix = callPackage (import ./default.nix) {
-            rustPlatform = pkgs.makeRustPlatform fenix.packages.${system}.stable;
-          };
+          containix = callPackage (import ./default.nix) { crate2nix = crate2nix'; };
           base = callPackage (import ./containix-base.nix) { inherit containix; };
         };
       }
