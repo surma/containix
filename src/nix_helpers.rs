@@ -100,6 +100,12 @@ impl NixStoreItem {
 #[derive(Debug, Clone, Deref, DerefMut)]
 pub struct ContainixFlake(NixFlake);
 
+impl Display for ContainixFlake {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
 impl FromStr for ContainixFlake {
     type Err = anyhow::Error;
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {

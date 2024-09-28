@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use derive_more::derive::Deref;
-use tracing::{info, instrument};
+use tracing::{info, instrument, trace};
 use typed_builder::TypedBuilder;
 
 use std::{
@@ -90,9 +90,10 @@ impl ContainerFsBuilder<((PathBuf,), (Vec<(PathBuf, PathBuf)>,), (Vec<PathBuf>,)
             .volumes
             .into_iter()
             .map(|(src, target)| {
-                let target_dir = rootfs.join(target);
-                std::fs::create_dir_all(&target_dir)
-                    .context("Creating directory for bind mount")?;
+                let target_dir = rootfs.join(target.strip_prefix("/").unwrap_or(&target));
+                std::fs::create_dir_all(&target_dir).with_context(|| {
+                    format!("Creating directory {target_dir:?} for volume mount")
+                })?;
                 mount(Option::<&str>::None, &src, &target_dir, ["bind,ro"])
                     .with_context(|| format!("Mounting {src:?} -> {target_dir:?}"))
             })

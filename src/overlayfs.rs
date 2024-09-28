@@ -9,7 +9,7 @@ use derive_more::derive::Deref;
 use tracing::{debug, error, instrument, trace};
 use typed_builder::TypedBuilder;
 
-use crate::tools::TOOLS;
+use crate::{command::run_command, tools::TOOLS};
 
 static MOUNT: LazyLock<OsString> = LazyLock::new(|| TOOLS.get("mount").unwrap().path.clone());
 static UMOUNT: LazyLock<OsString> = LazyLock::new(|| TOOLS.get("umount").unwrap().path.clone());
@@ -34,9 +34,8 @@ pub fn mount(
 
     let target = target.as_ref().to_path_buf();
     cmd.arg(&target);
-    trace!("Running mount command: {:?}", cmd);
 
-    let output = cmd.output()?;
+    let output = run_command(cmd)?;
     if !output.status.success() {
         error!(
             "Failed to mount {}: {}",

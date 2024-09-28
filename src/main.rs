@@ -7,7 +7,7 @@ use container::{ContainerFs, ContainerHandle, UnshareContainer};
 use nix_helpers::{ContainixFlake, NixStoreItem};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info, instrument, trace, warn};
-use tracing_subscriber::{fmt, EnvFilter};
+use tracing_subscriber::{fmt, fmt::format::FmtSpan, EnvFilter};
 use volume_mount::VolumeMount;
 
 mod cli_wrappers;
@@ -88,6 +88,7 @@ pub struct InterfaceConfig {
     netmask: Ipv4Addr,
 }
 
+#[instrument(level = "trace", skip_all)]
 fn build_command(args: BuildArgs) -> Result<()> {
     let store_item = args.flake.build()?;
     info!(
@@ -97,8 +98,8 @@ fn build_command(args: BuildArgs) -> Result<()> {
     Ok(())
 }
 
+#[instrument(level = "trace", skip_all)]
 fn enter_root_ns() -> Result<()> {
-    info!("Create namespace with root permissions");
     let uid = nix::unistd::getuid();
     let gid = nix::unistd::getgid();
     nix::sched::unshare(
@@ -110,9 +111,12 @@ fn enter_root_ns() -> Result<()> {
     Ok(())
 }
 
+#[instrument(level = "trace", skip_all)]
 fn run_command(args: RunArgs) -> Result<()> {
+    info!("Building container {}", args.flake);
     let store_item = args.flake.build()?;
     let closure = store_item.closure()?;
+    debug!("Dependency closure: {closure:?}");
 
     let mut container_fs = ContainerFs::build().rootfs(store_item.path());
 
@@ -229,6 +233,7 @@ fn build_path_env(config: &ContainerConfig) -> OsString {
 
 fn main() -> Result<()> {
     fmt()
+        .with_span_events(FmtSpan::ENTER | FmtSpan::EXIT)
         .with_env_filter(EnvFilter::from_default_env())
         .with_writer(std::io::stderr)
         .init();
