@@ -6,7 +6,7 @@ use command_wrappers::Interface;
 use container::{ContainerFs, ContainerHandle, UnshareContainer};
 use nix_helpers::{ContainixFlake, NixStoreItem};
 use serde::{Deserialize, Serialize};
-use tracing::{debug, info, instrument, trace, warn};
+use tracing::{debug, info, instrument, trace, warn, Level};
 use tracing_subscriber::{fmt, fmt::format::FmtSpan, EnvFilter};
 use volume_mount::VolumeMount;
 
@@ -234,7 +234,13 @@ fn build_path_env(config: &ContainerConfig) -> OsString {
 fn main() -> Result<()> {
     fmt()
         .with_span_events(FmtSpan::ENTER | FmtSpan::EXIT)
-        .with_env_filter(EnvFilter::from_default_env())
+        .with_env_filter(
+            EnvFilter::builder()
+                .with_default_directive(Level::INFO.into())
+                .with_env_var("CONTAINIX_LOG")
+                .from_env()
+                .context("Parsing CONTAINIX_LOG")?,
+        )
         .with_writer(std::io::stderr)
         .init();
 

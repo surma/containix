@@ -3,7 +3,13 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/24.05";
     flake-utils.url = "github:numtide/flake-utils";
-    containix.url = "github:surma/containix";
+    # In your own container flakes, you should 
+    # reference the repository directly. I.e:
+    # ```
+    # recontainix.url = "github:surma/containix";
+    # ```
+    # For development and testing purposes, the path here will remain relative.
+    containix.url = "../../";
   };
   outputs =
     {
@@ -28,7 +34,7 @@
           name = "simple-container";
           paths = [
             (writeShellScriptBin "simple-container" ''
-              # echo -e "\n# Mounts"
+              echo -e "\n# Mounts"
               mount
               echo -e "\n# Environment"
               env
