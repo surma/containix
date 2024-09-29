@@ -30,6 +30,8 @@
             bash
             coreutils
             util-linux
+            inetutils
+            nix
           ];
           entryPoint = ''
             echo -e "\n# Mounts"

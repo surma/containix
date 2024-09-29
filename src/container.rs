@@ -85,7 +85,7 @@ impl ContainerFsBuilder {
                 std::fs::create_dir_all(&target_dir).with_context(|| {
                     format!("Creating directory {target_dir:?} for volume mount")
                 })?;
-                mount(Option::<&str>::None, &src, &target_dir, ["bind,ro"])
+                mount(Option::<&str>::None, &src, &target_dir, ["bind"])
                     .with_context(|| format!("Mounting {src:?} -> {target_dir:?}"))
             })
             .collect::<Result<Vec<_>>>()
@@ -132,29 +132,12 @@ impl<T: AsRef<Path>> UnshareContainer<T> {
         self.root.as_ref()
     }
 
-    fn create_fsh(&self) -> Result<()> {
-        static FOLDERS: &[&str] = &[
-            "/var/lib",
-            "/var/log",
-            "/var/run",
-            "/var/cache",
-            "/var/lock",
-            "/tmp",
-            "/proc",
-        ];
-        for folder in FOLDERS {
-            std::fs::create_dir_all(self.root().join(folder.strip_prefix("/").unwrap_or(folder)))?;
-        }
-        Ok(())
-    }
-
     pub fn spawn(
         &self,
         command: impl AsRef<OsStr>,
         args: impl IntoIterator<Item = impl AsRef<OsStr>>,
         path_var: impl AsRef<OsStr>,
     ) -> Result<impl ContainerHandle> {
-        self.create_fsh()?;
         let mut unshare = std::process::Command::new(&*UNSHARE);
         unshare.arg("--root");
         unshare.arg(self.root());

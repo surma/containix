@@ -3,11 +3,11 @@
   buildEnv,
   pkgs,
   coreutils,
-  bash,
-  system,
+  rsync,
+  util-linux,
+  lib,
 }:
 let
-  inherit (pkgs) buildEnv;
   defaultFs = buildEnv {
     name = "container-fs";
     paths = with pkgs; [ iana-etc ];
@@ -16,30 +16,34 @@ let
   buildContainerEnv =
     {
       entryPoint,
+      envs ? { },
       packages ? [ ],
       fs ? defaultFs,
     }:
     let
-      inherit (pkgs)
-        writeShellScriptBin
-        rsync
-        coreutil
-        util-linux
-        ;
-
-      packagEnv = buildEnv {
+      packageEnv = buildEnv {
         name = "container-env";
         paths = packages;
       };
+
+      env = ({
+        HOME = "/root";
+        PATH = "${packageEnv}/bin";
+      }) // envs;
+
+      env_setup = lib.strings.concatLines (
+        lib.attrsets.mapAttrsToList (name: value: "export ${name}=${value}") env
+      );
     in
     writeShellScriptBin "containix-entry-point" ''
       PATH=${rsync}/bin:${util-linux}/bin:${coreutils}/bin
 
-      test -n "${fs}" &&rsync -rL ${fs}/ /
+      ${if (fs != null) then "rsync -rL ${fs}/ /" else ""}
 
+      mkdir /proc
       mount -t proc proc /proc
 
-      export PATH=${packagEnv}/bin
+      ${env_setup}
       exec ${writeShellScriptBin "containix-entry-point" entryPoint}/bin/containix-entry-point
     '';
 in
