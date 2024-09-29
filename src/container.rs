@@ -132,14 +132,29 @@ impl<T: AsRef<Path>> UnshareContainer<T> {
         self.root.as_ref()
     }
 
+    fn create_fsh(&self) -> Result<()> {
+        static FOLDERS: &[&str] = &[
+            "/var/lib",
+            "/var/log",
+            "/var/run",
+            "/var/cache",
+            "/var/lock",
+            "/tmp",
+            "/proc",
+        ];
+        for folder in FOLDERS {
+            std::fs::create_dir_all(self.root().join(folder.strip_prefix("/").unwrap_or(folder)))?;
+        }
+        Ok(())
+    }
+
     pub fn spawn(
         &self,
         command: impl AsRef<OsStr>,
         args: impl IntoIterator<Item = impl AsRef<OsStr>>,
         path_var: impl AsRef<OsStr>,
     ) -> Result<impl ContainerHandle> {
-        std::fs::create_dir_all(self.root().join("proc")).context("Creating proc directory")?;
-
+        self.create_fsh()?;
         let mut unshare = std::process::Command::new(&*UNSHARE);
         unshare.arg("--root");
         unshare.arg(self.root());
@@ -147,7 +162,6 @@ impl<T: AsRef<Path>> UnshareContainer<T> {
         unshare.arg("--mount");
         unshare.arg("--pid");
         unshare.arg("--ipc");
-        unshare.arg("--mount-proc=/proc");
         unshare.arg("--map-root-user");
         unshare.arg(command.as_ref());
         unshare.args(args);

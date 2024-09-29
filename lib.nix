@@ -10,21 +10,8 @@ let
   inherit (pkgs) buildEnv;
   defaultFs = buildEnv {
     name = "container-fs";
-    paths = with pkgs; [
-      iana-etc
-      # `mount`, `umount`, `more`, etc
-      util-linux
-      # `ls`, `cat`, `cp`, etc
-      coreutils
-      # `bash`
-      bash
-    ];
+    paths = with pkgs; [ iana-etc ];
   };
-
-  # mkInitScript = entryPoint:
-  # let
-  #   inherit (pkgs) writeShellScriptBin;
-  # in
 
   buildContainerEnv =
     {
@@ -33,7 +20,12 @@ let
       fs ? defaultFs,
     }:
     let
-      inherit (pkgs) writeShellScriptBin rsync coreutils;
+      inherit (pkgs)
+        writeShellScriptBin
+        rsync
+        coreutil
+        util-linux
+        ;
 
       packagEnv = buildEnv {
         name = "container-env";
@@ -41,19 +33,16 @@ let
       };
     in
     writeShellScriptBin "containix-entry-point" ''
-      PATH=${rsync}/bin:${coreutils}/bin
+      PATH=${rsync}/bin:${util-linux}/bin:${coreutils}/bin
 
-      mkdir -p /var/{lib,log,run,cache,lock,tmp} /tmp/containix
-      rsync -T /tmp/containix -rL ${fs}/ /
+      test -n "${fs}" &&rsync -rL ${fs}/ /
+
+      mount -t proc proc /proc
 
       export PATH=${packagEnv}/bin
       exec ${writeShellScriptBin "containix-entry-point" entryPoint}/bin/containix-entry-point
     '';
 in
-# buildEnv {
-#   name = "container-fs";
-#   paths = [ (mkInitScript entryPoint) ] ++ basePackages ++ extraPackages;
-# };
 {
   inherit buildContainerEnv;
 }

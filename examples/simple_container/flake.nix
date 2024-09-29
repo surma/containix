@@ -22,20 +22,25 @@
       system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
-        inherit (pkgs) writeShellScriptBin;
+        inherit (containix.lib.${system}) buildContainerEnv;
       in
       rec {
-        packages.default = writeShellScriptBin "containix-entry-point" ''
-          PATH=${pkgs.coreutils}/bin:${pkgs.util-linux}/bin
-
-          echo -e "\n# Mounts"
-          mount
-          echo -e "\n# Environment"
-          env
-          echo -e "\n# ls ''${1:-/}"
-          ls -alh ''${1:-/}
-          exec ${pkgs.bash}/bin/bash
-        '';
+        packages.default = buildContainerEnv {
+          packages = with pkgs; [
+            bash
+            coreutils
+            util-linux
+          ];
+          entryPoint = ''
+            echo -e "\n# Mounts"
+            mount
+            echo -e "\n# Environment"
+            env
+            echo -e "\n# ls ''${1:-/}"
+            ls -alh ''${1:-/}
+            exec bash
+          '';
+        };
       }
     );
 }
