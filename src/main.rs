@@ -2,7 +2,7 @@ use std::{collections::HashSet, ffi::OsString, mem::ManuallyDrop, net::Ipv4Addr}
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use container::{ContainerFs, ContainerHandle, UnshareContainer};
+use container::{ContainerFs, ContainerFsBuilder, ContainerHandle, UnshareContainer};
 use nix_helpers::{ContainixFlake, NixStoreItem};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info, instrument, trace, warn, Level};
@@ -14,6 +14,7 @@ mod command;
 mod container;
 mod nix_helpers;
 mod overlayfs;
+mod path_ext;
 mod tools;
 mod volume_mount;
 
@@ -84,25 +85,27 @@ fn enter_root_ns() -> Result<()> {
 #[instrument(level = "trace", skip_all)]
 fn containix_run(args: RunArgs) -> Result<()> {
     info!("Building container {}", args.flake);
-    let store_item = args.flake.build()?;
-    let closure = store_item.closure()?;
+    let store_item = args.flake.build().context("Building container flake")?;
+    let closure = store_item
+        .closure()
+        .context("Computing transitive closure")?;
     debug!("Dependency closure: {closure:?}");
 
-    let mut container_fs = ContainerFs::build().rootfs(store_item.path());
-
+    let mut container_fs = ContainerFsBuilder::default();
     for component in &closure {
-        container_fs = container_fs.expose_nix_item(component.path());
+        container_fs.nix_component(component.path());
     }
 
     for volume in &args.volumes {
-        container_fs = container_fs.add_volume_mount(&volume.host_path, &volume.container_path);
+        container_fs.volume(volume.clone());
     }
 
     enter_root_ns()?;
-    let container_fs = container_fs.create()?;
+    let container_fs = container_fs.build().context("Building container fs")?;
     info!("Container root: {}", container_fs.display());
 
-    let mut container = UnshareContainer::new(container_fs)?;
+    let mut container =
+        UnshareContainer::new(container_fs).context("Entering container namespace")?;
     container.set_keep(args.keep_container);
 
     let invocation = if args.args.is_empty() {

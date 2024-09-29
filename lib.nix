@@ -2,31 +2,51 @@
   writeShellScriptBin,
   buildEnv,
   pkgs,
+  coreutils,
+  rsync,
+  util-linux,
+  lib,
 }:
-{
-  containerFS =
+let
+  defaultFs = buildEnv {
+    name = "container-fs";
+    paths = with pkgs; [ iana-etc ];
+  };
+
+  buildContainerEnv =
     {
-      extraPackages ? [ ],
-      entryPoint ? null,
-      basePackages ? (
-        with pkgs;
-        [
-          # `/etc/protocols` etc (e.g. `ping` needs this to work)
-          iana-etc
-          # `mount`, `umount`, `more`, etc
-          util-linux
-          # `ls`, `cat`, `cp`, etc
-          coreutils
-          # `bash`
-          bash
-        ]
-      ),
+      entryPoint,
+      envs ? { },
+      packages ? [ ],
+      fs ? defaultFs,
     }:
     let
-      entryPointScript = (writeShellScriptBin "containix-entry-point" entryPoint);
+      packageEnv = buildEnv {
+        name = "container-env";
+        paths = packages;
+      };
+
+      env = ({
+        HOME = "/root";
+        PATH = "${packageEnv}/bin";
+      }) // envs;
+
+      env_setup = lib.strings.concatLines (
+        lib.attrsets.mapAttrsToList (name: value: "export ${name}=${value}") env
+      );
     in
-    buildEnv {
-      name = "container-fs";
-      paths = [ entryPointScript ] ++ basePackages ++ extraPackages;
-    };
+    writeShellScriptBin "containix-entry-point" ''
+      PATH=${rsync}/bin:${util-linux}/bin:${coreutils}/bin
+
+      ${if (fs != null) then "rsync -rL ${fs}/ /" else ""}
+
+      mkdir /proc
+      mount -t proc proc /proc
+
+      ${env_setup}
+      exec ${writeShellScriptBin "containix-entry-point" entryPoint}/bin/containix-entry-point
+    '';
+in
+{
+  inherit buildContainerEnv;
 }

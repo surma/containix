@@ -22,11 +22,17 @@
       system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
-        inherit (pkgs) writeShellScriptBin;
-        inherit (containix.lib.${system}) containerFS;
+        inherit (containix.lib.${system}) buildContainerEnv;
       in
       rec {
-        packages.default = containerFS {
+        packages.default = buildContainerEnv {
+          packages = with pkgs; [
+            bash
+            coreutils
+            util-linux
+            inetutils
+            nix
+          ];
           entryPoint = ''
             echo -e "\n# Mounts"
             mount
@@ -34,7 +40,7 @@
             env
             echo -e "\n# ls ''${1:-/}"
             ls -alh ''${1:-/}
-            exec /bin/bash
+            exec bash
           '';
         };
       }
