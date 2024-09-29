@@ -10,7 +10,7 @@ use std::{
 };
 
 use crate::{
-    overlayfs::{mount, MountGuard},
+    mount::{bind_mount, MountGuard},
     path_ext::PathExt,
     tools::TOOLS,
     volume_mount::VolumeMount,
@@ -66,7 +66,8 @@ impl ContainerFsBuilder {
             .map(|item| {
                 let target = root.path().join(item.rootless());
                 std::fs::create_dir_all(&target)?;
-                mount(Option::<&str>::None, &item, &target, ["bind,ro"])
+                bind_mount(&item, &target, true)
+                    .with_context(|| format!("Mounting {}", item.display()))
             })
             .collect::<Result<Vec<_>>>()?;
 
@@ -78,12 +79,7 @@ impl ContainerFsBuilder {
                 let dest = root.path().join(volume_mount.container_path.rootless());
                 std::fs::create_dir_all(&dest)
                     .with_context(|| format!("Creating directory {dest:?} for volume mount"))?;
-                let opt = if volume_mount.read_only {
-                    "bind,ro"
-                } else {
-                    "bind"
-                };
-                mount(Option::<&str>::None, &src, &dest, [opt])
+                bind_mount(&src, &dest, volume_mount.read_only)
                     .with_context(|| format!("Mounting {src:?} -> {dest:?}"))
             })
             .collect::<Result<Vec<_>>>()
