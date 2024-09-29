@@ -1,96 +1,87 @@
 use anyhow::{Context, Result};
-use derive_more::derive::Deref;
-use tracing::{info, instrument, trace};
-use typed_builder::TypedBuilder;
+use derive_builder::Builder;
+use tracing::{info, instrument, trace, warn};
 
 use std::{
     ffi::{OsStr, OsString},
+    ops::Deref,
     path::{Path, PathBuf},
     sync::LazyLock,
 };
 
 use crate::{
-    overlayfs::{mount, MountGuard, OverlayFs, OverlayFsGuard},
+    overlayfs::{mount, MountGuard},
     tools::TOOLS,
 };
 
 static UNSHARE: LazyLock<OsString> = LazyLock::new(|| TOOLS.get("unshare").unwrap().path.clone());
 
-#[derive(Debug, Clone, TypedBuilder)]
-#[builder(builder_method(name = build))]
-#[builder(build_method(name = __create, vis = ""))]
-#[builder(mutators(
-    pub fn add_volume_mount(&mut self, src: impl Into<PathBuf>, target: impl Into<PathBuf>) {
-        self.volumes.push((src.into(), target.into()));
-    }
-))]
-#[builder(mutators(
-    pub fn expose_nix_item(&mut self, item: impl Into<PathBuf>) {
-        self.nix_mounts.push(item.into());
-    }
-))]
+#[derive(Debug, Clone, Builder)]
+#[builder(build_fn(name = __build, vis = ""))]
 pub struct ContainerFs {
-    #[builder(setter(into))]
-    rootfs: PathBuf,
-    #[builder(via_mutators(init = Vec::new()))]
-    volumes: Vec<(PathBuf, PathBuf)>,
-    #[builder(via_mutators(init = Vec::new()))]
-    nix_mounts: Vec<PathBuf>,
+    #[builder(default, setter(into, strip_option))]
+    rootfs: Option<PathBuf>,
+    #[builder(default, setter(custom))]
+    volume: Vec<(PathBuf, PathBuf)>,
+    #[builder(default, setter(custom))]
+    nix_component: Vec<PathBuf>,
 }
 
 #[allow(dead_code)]
-#[derive(Debug, Deref)]
+#[derive(Debug)]
 pub struct ContainerFsGuard {
     // Order is important here, as drop runs in order of declaration.
     // https://doc.rust-lang.org/stable/std/ops/trait.Drop.html#drop-order
-    volumes: Vec<MountGuard>,
+    volume_mounts: Vec<MountGuard>,
     nix_mounts: Vec<MountGuard>,
-    #[deref]
-    rootfs: OverlayFsGuard,
-    base: tempdir::TempDir,
+    root: tempdir::TempDir,
 }
 
-#[allow(dead_code, non_camel_case_types, missing_docs)]
-#[automatically_derived]
-impl ContainerFsBuilder<((PathBuf,), (Vec<(PathBuf, PathBuf)>,), (Vec<PathBuf>,))> {
-    #[instrument(level = "trace", skip_all)]
-    #[allow(
-        clippy::default_trait_access,
-        clippy::used_underscore_binding,
-        clippy::no_effect_underscore_binding
-    )]
-    pub fn create(self) -> Result<ContainerFsGuard> {
-        let container = self.__create();
-        let base = tempdir::TempDir::new("containix-container").context("Creating tempdir")?;
-        std::fs::create_dir_all(base.path().join("root")).context("Creating root")?;
+impl ContainerFsBuilder {
+    pub fn volume(
+        &mut self,
+        volume_src: impl AsRef<Path>,
+        volume_dest: impl AsRef<Path>,
+    ) -> &mut Self {
+        self.volume.get_or_insert_with(|| vec![]).push((
+            volume_src.as_ref().to_path_buf(),
+            volume_dest.as_ref().to_path_buf(),
+        ));
+        self
+    }
 
-        let misc = base.path().join("misc");
-        std::fs::create_dir_all(misc.join("proc")).context("Creating proc dir")?;
+    pub fn nix_component(&mut self, nix_mount: impl AsRef<Path>) -> &mut Self {
+        self.nix_component
+            .get_or_insert_with(|| vec![])
+            .push(nix_mount.as_ref().to_path_buf());
+        self
+    }
 
-        let upper_dir = base.path().join("upper");
-        let work_dir = base.path().join("work");
-        let rootfs = OverlayFs::builder()
-            .add_lower(container.rootfs)
-            .add_lower(misc)
-            .upper(upper_dir)
-            .work(work_dir)
-            .mount(base.path().join("root"))?;
+    pub fn build(self) -> Result<ContainerFsGuard> {
+        let container = self.__build()?;
+        let root = tempdir::TempDir::new("containix-container").context("Creating tempdir")?;
+
+        if let Some(_) = container.rootfs {
+            warn!("Not sure how rootfs got set, but it isn’t supported yet.");
+        }
 
         let nix_mounts = container
-            .nix_mounts
+            .nix_component
             .into_iter()
             .map(|item| {
-                let target = rootfs.join(item.strip_prefix("/").unwrap_or(&item));
+                let target = root.path().join(item.strip_prefix("/").unwrap_or(&item));
                 std::fs::create_dir_all(&target)?;
                 mount(Option::<&str>::None, &item, &target, ["bind,ro"])
             })
             .collect::<Result<Vec<_>>>()?;
 
-        let volumes = container
-            .volumes
+        let volume_mounts = container
+            .volume
             .into_iter()
             .map(|(src, target)| {
-                let target_dir = rootfs.join(target.strip_prefix("/").unwrap_or(&target));
+                let target_dir = root
+                    .path()
+                    .join(target.strip_prefix("/").unwrap_or(&target));
                 std::fs::create_dir_all(&target_dir).with_context(|| {
                     format!("Creating directory {target_dir:?} for volume mount")
                 })?;
@@ -101,17 +92,24 @@ impl ContainerFsBuilder<((PathBuf,), (Vec<(PathBuf, PathBuf)>,), (Vec<PathBuf>,)
             .context("Mounting volumes")?;
 
         Ok(ContainerFsGuard {
-            volumes,
-            rootfs,
+            volume_mounts,
             nix_mounts,
-            base,
+            root,
         })
+    }
+}
+
+impl Deref for ContainerFsGuard {
+    type Target = Path;
+
+    fn deref(&self) -> &Self::Target {
+        self.root.path()
     }
 }
 
 impl AsRef<Path> for ContainerFsGuard {
     fn as_ref(&self) -> &Path {
-        self.as_path()
+        &*self
     }
 }
 

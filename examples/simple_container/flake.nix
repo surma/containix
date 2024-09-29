@@ -23,20 +23,19 @@
       let
         pkgs = nixpkgs.legacyPackages.${system};
         inherit (pkgs) writeShellScriptBin;
-        inherit (containix.lib.${system}) containerFS;
       in
       rec {
-        packages.default = containerFS {
-          entryPoint = ''
-            echo -e "\n# Mounts"
-            mount
-            echo -e "\n# Environment"
-            env
-            echo -e "\n# ls ''${1:-/}"
-            ls -alh ''${1:-/}
-            exec /bin/bash
-          '';
-        };
+        packages.default = writeShellScriptBin "containix-entry-point" ''
+          PATH=${pkgs.coreutils}/bin:${pkgs.util-linux}/bin
+
+          echo -e "\n# Mounts"
+          mount
+          echo -e "\n# Environment"
+          env
+          echo -e "\n# ls ''${1:-/}"
+          ls -alh ''${1:-/}
+          exec ${pkgs.bash}/bin/bash
+        '';
       }
     );
 }
