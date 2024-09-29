@@ -14,6 +14,7 @@ mod command;
 mod container;
 mod nix_helpers;
 mod overlayfs;
+mod path_ext;
 mod tools;
 mod volume_mount;
 
@@ -96,7 +97,7 @@ fn containix_run(args: RunArgs) -> Result<()> {
     }
 
     for volume in &args.volumes {
-        container_fs.volume(&volume.host_path, &volume.container_path);
+        container_fs.volume(volume.clone());
     }
 
     enter_root_ns()?;

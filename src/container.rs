@@ -11,7 +11,9 @@ use std::{
 
 use crate::{
     overlayfs::{mount, MountGuard},
+    path_ext::PathExt,
     tools::TOOLS,
+    volume_mount::VolumeMount,
 };
 
 static UNSHARE: LazyLock<OsString> = LazyLock::new(|| TOOLS.get("unshare").unwrap().path.clone());
@@ -22,7 +24,7 @@ pub struct ContainerFs {
     #[builder(default, setter(into, strip_option))]
     rootfs: Option<PathBuf>,
     #[builder(default, setter(custom))]
-    volume: Vec<(PathBuf, PathBuf)>,
+    volume: Vec<VolumeMount>,
     #[builder(default, setter(custom))]
     nix_component: Vec<PathBuf>,
 }
@@ -38,15 +40,8 @@ pub struct ContainerFsGuard {
 }
 
 impl ContainerFsBuilder {
-    pub fn volume(
-        &mut self,
-        volume_src: impl AsRef<Path>,
-        volume_dest: impl AsRef<Path>,
-    ) -> &mut Self {
-        self.volume.get_or_insert_with(|| vec![]).push((
-            volume_src.as_ref().to_path_buf(),
-            volume_dest.as_ref().to_path_buf(),
-        ));
+    pub fn volume(&mut self, volume_mount: VolumeMount) -> &mut Self {
+        self.volume.get_or_insert_with(|| vec![]).push(volume_mount);
         self
     }
 
@@ -69,7 +64,7 @@ impl ContainerFsBuilder {
             .nix_component
             .into_iter()
             .map(|item| {
-                let target = root.path().join(item.strip_prefix("/").unwrap_or(&item));
+                let target = root.path().join(item.rootless());
                 std::fs::create_dir_all(&target)?;
                 mount(Option::<&str>::None, &item, &target, ["bind,ro"])
             })
@@ -78,15 +73,18 @@ impl ContainerFsBuilder {
         let volume_mounts = container
             .volume
             .into_iter()
-            .map(|(src, target)| {
-                let target_dir = root
-                    .path()
-                    .join(target.strip_prefix("/").unwrap_or(&target));
-                std::fs::create_dir_all(&target_dir).with_context(|| {
-                    format!("Creating directory {target_dir:?} for volume mount")
-                })?;
-                mount(Option::<&str>::None, &src, &target_dir, ["bind"])
-                    .with_context(|| format!("Mounting {src:?} -> {target_dir:?}"))
+            .map(|volume_mount| {
+                let src = volume_mount.host_path.as_path();
+                let dest = root.path().join(volume_mount.container_path.rootless());
+                std::fs::create_dir_all(&dest)
+                    .with_context(|| format!("Creating directory {dest:?} for volume mount"))?;
+                let opt = if volume_mount.read_only {
+                    "bind,ro"
+                } else {
+                    "bind"
+                };
+                mount(Option::<&str>::None, &src, &dest, [opt])
+                    .with_context(|| format!("Mounting {src:?} -> {dest:?}"))
             })
             .collect::<Result<Vec<_>>>()
             .context("Mounting volumes")?;
