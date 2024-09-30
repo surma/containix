@@ -8,7 +8,7 @@ use std::{
     process::Command,
     str::FromStr,
 };
-use tracing::{debug, error, instrument};
+use tracing::{debug, error, instrument, Level};
 
 use crate::cli_wrappers::nix::{FlakeOutputSymlink, NixBuild, NixEval};
 
@@ -193,7 +193,7 @@ impl FromStr for NixFlake {
 
 impl NixFlake {
     // FIXME: I hate the callback pattern here. Haven’t come up with a better design yet.
-    #[instrument(level = "trace", skip_all)]
+    #[instrument(level = "trace", skip_all, err(level = Level::TRACE))]
     pub fn build<F>(&self, f: F) -> Result<NixBuildResult>
     where
         F: FnOnce(&mut NixBuild),
@@ -222,19 +222,12 @@ impl NixFlake {
         }
     }
 
-    #[instrument(level = "trace", skip_all)]
+    #[instrument(level = "trace", skip_all, err(level = Level::TRACE))]
     pub fn info(&self) -> Result<NixFlakeShowOutput> {
         let mut nix_cmd = NixBuild::default();
         nix_cmd.arg("flake").arg("show").arg(self).json(true);
         let output: NixFlakeShowOutput = nix_cmd.run()?;
         Ok(output)
-    }
-
-    pub fn output_from_flake(output_name: impl AsRef<str>, flake: impl AsRef<str>) -> Self {
-        Self {
-            flake: flake.as_ref().to_string(),
-            output: Some(output_name.as_ref().to_string()),
-        }
     }
 }
 
