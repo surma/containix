@@ -1,13 +1,11 @@
 use anyhow::{Context, Result};
 use derive_builder::Builder;
-use nix::libc::execvpe;
-use tracing::{info, instrument, trace, warn, Level};
+use tracing::{instrument, warn, Level};
 
 use std::{
-    ffi::{CString, OsStr, OsString},
+    ffi::{CString, OsStr},
     ops::Deref,
     path::{Path, PathBuf},
-    sync::LazyLock,
 };
 
 use crate::{
@@ -41,14 +39,14 @@ pub struct ContainerFsGuard {
 impl ContainerFsBuilder {
     pub fn volume(&mut self, volume_mount: VolumeMount) -> &mut Self {
         self.volumes
-            .get_or_insert_with(|| vec![])
+            .get_or_insert_with(std::vec::Vec::new)
             .push(volume_mount);
         self
     }
 
     pub fn nix_component(&mut self, nix_mount: impl AsRef<Path>) -> &mut Self {
         self.nix_components
-            .get_or_insert_with(|| vec![])
+            .get_or_insert_with(std::vec::Vec::new)
             .push(nix_mount.as_ref().to_path_buf());
         self
     }
@@ -58,7 +56,7 @@ impl ContainerFsBuilder {
         let container = self.__build()?;
         let root = tempdir::TempDir::new("containix-container").context("Creating tempdir")?;
 
-        if let Some(_) = container.rootfs {
+        if container.rootfs.is_some() {
             warn!("Not sure how rootfs got set, but it isn’t supported yet.");
         }
 
@@ -87,7 +85,7 @@ impl ContainerFsBuilder {
                 std::fs::create_dir_all(&dest)
                     .with_context(|| format!("Creating directory {dest:?} for volume mount"))?;
                 BindMount::default()
-                    .src(&src)
+                    .src(src)
                     .dest(&dest)
                     .read_only(volume_mount.read_only)
                     .cleanup(false)
@@ -115,7 +113,7 @@ impl Deref for ContainerFsGuard {
 
 impl AsRef<Path> for ContainerFsGuard {
     fn as_ref(&self) -> &Path {
-        &*self
+        self
     }
 }
 
@@ -148,10 +146,10 @@ impl<T: AsRef<Path>> UnshareContainer<T> {
         let mut unshare_builder = UnshareEnvironmentBuilder::default();
         unshare_builder
             .namespace(UnshareNamespaces::Mount)
-            .namespace(UnshareNamespaces::PID)
-            .namespace(UnshareNamespaces::IPC)
+            .namespace(UnshareNamespaces::Pid)
+            .namespace(UnshareNamespaces::Ipc)
             .namespace(UnshareNamespaces::User)
-            .namespace(UnshareNamespaces::UTS)
+            .namespace(UnshareNamespaces::Uts)
             .map_current_user_to_root()
             .root(self.root())
             .fork(true);

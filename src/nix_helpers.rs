@@ -1,6 +1,6 @@
 use anyhow::{bail, Context, Result};
 use derive_more::derive::{Deref, DerefMut};
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::{
     collections::{HashMap, HashSet},
     fmt::Display,

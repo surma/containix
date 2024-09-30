@@ -5,7 +5,7 @@ use std::{
 };
 
 use anyhow::Result;
-use tracing::{debug, error, instrument, trace};
+use tracing::{error, instrument, trace};
 
 pub fn resolve_command(command: impl AsRef<OsStr>) -> PathBuf {
     let command = command.as_ref();

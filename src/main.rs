@@ -1,10 +1,9 @@
-use std::{collections::HashSet, ffi::OsString, mem::ManuallyDrop, net::Ipv4Addr};
+use std::mem::ManuallyDrop;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use container::{ContainerFs, ContainerFsBuilder, ContainerHandle, UnshareContainer};
-use nix_helpers::{ContainixFlake, NixStoreItem};
-use serde::{Deserialize, Serialize};
+use container::{ContainerFsBuilder, ContainerHandle, UnshareContainer};
+use nix_helpers::ContainixFlake;
 use tracing::{debug, info, instrument, trace, warn, Level};
 use tracing_subscriber::{fmt, fmt::format::FmtSpan, EnvFilter};
 use unshare::{UnshareEnvironmentBuilder, UnshareNamespaces};
@@ -131,7 +130,7 @@ fn containix_run(args: RunArgs) -> Result<()> {
     let mut container_pid = container
         .spawn(
             invocation
-                .get(0)
+                .first()
                 .expect("guaranteed to have at least 1 element by code above"),
             &invocation[1..],
             store_item.path().join("bin"),

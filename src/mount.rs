@@ -11,7 +11,7 @@ impl Drop for MountGuard {
         let Some(path) = &self.0 else {
             return;
         };
-        if let Err(err) = unmount(&path) {
+        if let Err(err) = unmount(path) {
             error!("Failed to unmount {}: {}", path.display(), err);
         }
     }

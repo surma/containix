@@ -6,7 +6,7 @@ use std::{
 use anyhow::{Context, Result};
 use derive_builder::Builder;
 use derive_more::derive::{Deref, DerefMut};
-use tracing::{error, instrument, trace, Level};
+use tracing::{instrument, Level};
 
 use crate::container::ContainerHandle;
 
@@ -16,13 +16,13 @@ pub enum UnshareNamespaces {
     /// Mounting and unmounting filesystems will not affect the rest of the system.
     Mount,
     /// Setting hostname or domainname will not affect the rest of the system.
-    UTS,
+    Uts,
     /// The process will have an independent namespace for POSIX message queues as well as System V message queues, semaphore sets and shared memory segments
-    IPC,
+    Ipc,
     /// The process will have independent IPv4 and IPv6 stacks, IP routing tables, firewall rules, the `/proc/net` and `/sys/class/net` directory trees, sockets, etc.
     Network,
     /// Children will have a distinct set of PID-to-process mappings from their parent.
-    PID,
+    Pid,
     /// The process will have a virtualized view of `/proc/self/cgroup`, and new cgroup mounts will be rooted at the namespace cgroup root.
     Cgroup,
     /// The process will have a distinct set of UIDs, GIDs and capabilities.
@@ -31,14 +31,14 @@ pub enum UnshareNamespaces {
     Time,
 }
 
-impl Into<nix::sched::CloneFlags> for UnshareNamespaces {
-    fn into(self) -> nix::sched::CloneFlags {
-        match self {
+impl From<UnshareNamespaces> for nix::sched::CloneFlags {
+    fn from(val: UnshareNamespaces) -> Self {
+        match val {
             UnshareNamespaces::Mount => nix::sched::CloneFlags::CLONE_NEWNS,
-            UnshareNamespaces::UTS => nix::sched::CloneFlags::CLONE_NEWUTS,
-            UnshareNamespaces::IPC => nix::sched::CloneFlags::CLONE_NEWIPC,
+            UnshareNamespaces::Uts => nix::sched::CloneFlags::CLONE_NEWUTS,
+            UnshareNamespaces::Ipc => nix::sched::CloneFlags::CLONE_NEWIPC,
             UnshareNamespaces::Network => nix::sched::CloneFlags::CLONE_NEWNET,
-            UnshareNamespaces::PID => nix::sched::CloneFlags::CLONE_NEWPID,
+            UnshareNamespaces::Pid => nix::sched::CloneFlags::CLONE_NEWPID,
             UnshareNamespaces::Cgroup => nix::sched::CloneFlags::CLONE_NEWCGROUP,
             UnshareNamespaces::User => nix::sched::CloneFlags::CLONE_NEWUSER,
             UnshareNamespaces::Time => unimplemented!(),
@@ -117,28 +117,28 @@ pub struct UnshareEnvironment {
 impl UnshareEnvironmentBuilder {
     pub fn uid_map(&mut self, uid_map: IdRangeMap) -> &mut Self {
         self.uid_maps
-            .get_or_insert_with(|| Default::default())
+            .get_or_insert_with(Default::default)
             .push(uid_map);
         self
     }
 
     pub fn gid_map(&mut self, gid_map: IdRangeMap) -> &mut Self {
         self.gid_maps
-            .get_or_insert_with(|| Default::default())
+            .get_or_insert_with(Default::default)
             .push(gid_map);
         self
     }
 
     pub fn namespace(&mut self, namespace: UnshareNamespaces) -> &mut Self {
         self.namespaces
-            .get_or_insert_with(|| vec![])
+            .get_or_insert_with(std::vec::Vec::new)
             .push(namespace);
         self
     }
 
     pub fn map_current_user_to_root(&mut self) -> &mut Self {
         let mapping = IdRangeMap {
-            outer_id_start: nix::unistd::getuid().try_into().unwrap(),
+            outer_id_start: nix::unistd::getuid().into(),
             inner_id_start: 0,
             count: 1,
         };
@@ -171,22 +171,21 @@ impl UnshareEnvironmentBuilder {
         }
 
         if unshare.fork {
-            match unsafe { nix::unistd::fork() }? {
-                nix::unistd::ForkResult::Parent { child } => return Ok(Some(ChildProcess(child))),
-                _ => {}
+            if let nix::unistd::ForkResult::Parent { child } = unsafe { nix::unistd::fork() }? {
+                return Ok(Some(ChildProcess(child)));
             }
         }
 
         if let Some(root) = unshare.root {
             nix::unistd::chroot(&root)
                 .with_context(|| format!("Chrooting to {}", root.display()))?;
-            nix::unistd::chdir("/").with_context(|| format!("Changing directory to /"))?;
+            nix::unistd::chdir("/").with_context(|| "Changing directory to /".to_string())?;
         }
         Ok(None)
     }
 }
 
-fn write_mappings<'a>(p: impl AsRef<Path>, mappings: &IdRanges) -> Result<()> {
+fn write_mappings(p: impl AsRef<Path>, mappings: &IdRanges) -> Result<()> {
     let mut file = std::fs::OpenOptions::new()
         .write(true)
         .truncate(true)
