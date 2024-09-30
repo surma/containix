@@ -1,9 +1,10 @@
 use anyhow::{Context, Result};
 use derive_builder::Builder;
+use nix::libc::execvpe;
 use tracing::{info, instrument, trace, warn};
 
 use std::{
-    ffi::{OsStr, OsString},
+    ffi::{CString, OsStr, OsString},
     ops::Deref,
     path::{Path, PathBuf},
     sync::LazyLock,
@@ -13,6 +14,7 @@ use crate::{
     mount::{bind_mount, MountGuard},
     path_ext::PathExt,
     tools::TOOLS,
+    unshare::{UnshareEnvironmentBuilder, UnshareNamespaces},
     volume_mount::VolumeMount,
 };
 
@@ -132,49 +134,44 @@ impl<T: AsRef<Path>> UnshareContainer<T> {
         args: impl IntoIterator<Item = impl AsRef<OsStr>>,
         path_var: impl AsRef<OsStr>,
     ) -> Result<impl ContainerHandle> {
-        let mut unshare = std::process::Command::new(&*UNSHARE);
-        unshare.arg("--root");
-        unshare.arg(self.root());
-        unshare.arg("--fork");
-        unshare.arg("--mount");
-        unshare.arg("--pid");
-        unshare.arg("--ipc");
-        unshare.arg("--map-root-user");
-        unshare.arg(command.as_ref());
-        unshare.args(args);
-        unshare.env_clear();
-        unshare.env("CONTAINIX_CONTAINER", "1");
-        unshare.env("PATH", path_var.as_ref());
-        if let Ok(log) = std::env::var("RUST_LOG") {
-            unshare.env("RUST_LOG", log);
+        let mut unshare_builder = UnshareEnvironmentBuilder::default();
+        unshare_builder
+            .namespace(UnshareNamespaces::Mount)
+            .namespace(UnshareNamespaces::PID)
+            .namespace(UnshareNamespaces::IPC)
+            .namespace(UnshareNamespaces::User)
+            .namespace(UnshareNamespaces::UTS)
+            // .namespace(UnshareNamespaces::Network)
+            .map_current_user_to_root()
+            .fork(true);
+
+        match unshare_builder
+            .enter()
+            .context("Entering unshare environment")?
+        {
+            None => {
+                nix::unistd::execvpe(
+                    CString::new(command.as_ref().as_encoded_bytes())?.as_c_str(),
+                    &args
+                        .into_iter()
+                        .map(|s| Ok(CString::new(s.as_ref().as_encoded_bytes())?))
+                        .collect::<Result<Vec<_>>>()?,
+                    // FIXME: Should probably avoid lossy function here
+                    &[CString::new(format!(
+                        "PATH={}",
+                        path_var.as_ref().to_string_lossy()
+                    ))?],
+                )?;
+                unreachable!()
+            }
+            Some(handle) => Ok(handle),
         }
-        unshare.stdout(std::process::Stdio::inherit());
-        unshare.stderr(std::process::Stdio::inherit());
-        unshare.stdin(std::process::Stdio::inherit());
-        tracing::trace!(
-            "Running {} {:?}",
-            unshare.get_program().to_string_lossy(),
-            unshare.get_args().collect::<Vec<_>>()
-        );
-        let child = unshare.spawn()?;
-        Ok(child)
     }
 }
 
 pub trait ContainerHandle {
+    /// Get the PID of the container.
     fn pid(&self) -> u32;
-    fn wait(&mut self) -> Result<u32>;
-}
-
-impl ContainerHandle for std::process::Child {
-    fn pid(&self) -> u32 {
-        std::process::Child::id(self)
-    }
-    fn wait(&mut self) -> Result<u32> {
-        Ok(std::process::Child::wait(self)?
-            .code()
-            .unwrap_or(0)
-            .try_into()
-            .unwrap())
-    }
+    /// Wait for the container to exit and return the exit code.
+    fn wait(&mut self) -> Result<i32>;
 }

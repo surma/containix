@@ -16,6 +16,7 @@ mod mount;
 mod nix_helpers;
 mod path_ext;
 mod tools;
+mod unshare;
 mod volume_mount;
 
 #[derive(Parser, Debug)]
