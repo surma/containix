@@ -13,12 +13,9 @@ use std::{
 use crate::{
     mount::{bind_mount, MountGuard},
     path_ext::PathExt,
-    tools::TOOLS,
     unshare::{UnshareEnvironmentBuilder, UnshareNamespaces},
     volume_mount::VolumeMount,
 };
-
-static UNSHARE: LazyLock<OsString> = LazyLock::new(|| TOOLS.get("unshare").unwrap().path.clone());
 
 #[derive(Debug, Clone, Builder)]
 #[builder(build_fn(name = __build, vis = ""))]
@@ -145,6 +142,7 @@ impl<T: AsRef<Path>> UnshareContainer<T> {
             .namespace(UnshareNamespaces::UTS)
             // .namespace(UnshareNamespaces::Network)
             .map_current_user_to_root()
+            .root(self.root())
             .fork(true);
 
         match unshare_builder

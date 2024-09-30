@@ -5,8 +5,8 @@ use std::{
 
 use anyhow::{Context, Result};
 use derive_builder::Builder;
-use derive_more::derive::Deref;
-use tracing::{instrument, Level};
+use derive_more::derive::{Deref, DerefMut};
+use tracing::{error, instrument, trace, Level};
 
 use crate::container::ContainerHandle;
 
@@ -54,13 +54,29 @@ pub struct IdRangeMap {
 }
 
 impl IdRangeMap {
-    pub fn write_to(&self, mut w: impl Write) -> Result<()> {
-        writeln!(
-            w,
+    pub fn serialize(&self) -> String {
+        format!(
             "{} {} {}",
-            self.outer_id_start, self.inner_id_start, self.count
-        )?;
+            self.inner_id_start, self.outer_id_start, self.count
+        )
+    }
+}
+
+#[derive(Debug, Clone, Default, Deref, DerefMut)]
+pub struct IdRanges(Vec<IdRangeMap>);
+
+impl IdRanges {
+    pub fn write_to(&self, mut w: impl Write) -> Result<()> {
+        w.write_all(self.serialize().as_bytes())?;
         Ok(())
+    }
+
+    pub fn serialize(&self) -> String {
+        self.0
+            .iter()
+            .map(IdRangeMap::serialize)
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 }
 
@@ -88,9 +104,9 @@ pub struct UnshareEnvironment {
     #[builder(default, setter(custom))]
     namespace: Vec<UnshareNamespaces>,
     #[builder(default, setter(custom))]
-    uid_map: Vec<IdRangeMap>,
+    uid_map: IdRanges,
     #[builder(default, setter(custom))]
-    gid_map: Vec<IdRangeMap>,
+    gid_map: IdRanges,
     #[builder(default)]
     fork: bool,
     #[builder(default, setter(strip_option, into))]
@@ -100,12 +116,16 @@ pub struct UnshareEnvironment {
 #[allow(dead_code)]
 impl UnshareEnvironmentBuilder {
     pub fn uid_map(&mut self, uid_map: IdRangeMap) -> &mut Self {
-        self.uid_map.get_or_insert_with(|| vec![]).push(uid_map);
+        self.uid_map
+            .get_or_insert_with(|| Default::default())
+            .push(uid_map);
         self
     }
 
     pub fn gid_map(&mut self, gid_map: IdRangeMap) -> &mut Self {
-        self.gid_map.get_or_insert_with(|| vec![]).push(gid_map);
+        self.gid_map
+            .get_or_insert_with(|| Default::default())
+            .push(gid_map);
         self
     }
 
@@ -120,20 +140,19 @@ impl UnshareEnvironmentBuilder {
             inner_id_start: 0,
             count: 1,
         };
-        self.uid_map
-            .get_or_insert_with(|| vec![])
-            .push(mapping.clone());
-        self.gid_map.get_or_insert_with(|| vec![]).push(mapping);
+        self.uid_map(mapping.clone());
+        self.gid_map(mapping);
         self
     }
 
     #[instrument(level = "trace", skip_all, err(level = Level::TRACE))]
     pub fn enter(self) -> Result<Option<ChildProcess>> {
         let unshare = self.build().context("Building unshare options")?;
-
-        std::fs::write("/proc/self/setgroups", "deny").context("Disallowing setgroups")?;
-        write_mappings("/proc/self/uid_map", &unshare.uid_map).context("Writing uid map")?;
-        write_mappings("/proc/self/gid_map", &unshare.gid_map).context("Writing gid map")?;
+        // if !unshare.uid_map.is_empty() || !unshare.gid_map.is_empty() {
+        //     std::fs::write("/proc/self/setgroups", "deny").context("Disallowing setgroups")?;
+        //     write_mappings("/proc/self/uid_map", &unshare.uid_map).context("Writing uid map")?;
+        //     write_mappings("/proc/self/gid_map", &unshare.gid_map).context("Writing gid map")?;
+        // }
 
         let clone_flags = unshare
             .namespace
@@ -143,28 +162,35 @@ impl UnshareEnvironmentBuilder {
             });
         nix::sched::unshare(clone_flags).context("Entering new namespace")?;
 
+        if !unshare.uid_map.is_empty() || !unshare.gid_map.is_empty() {
+            std::fs::write("/proc/self/setgroups", "deny").context("Disallowing setgroups")?;
+            write_mappings("/proc/self/uid_map", &unshare.uid_map).context("Writing uid map")?;
+            write_mappings("/proc/self/gid_map", &unshare.gid_map).context("Writing gid map")?;
+        }
+
         if unshare.fork {
             match unsafe { nix::unistd::fork() }? {
-                nix::unistd::ForkResult::Child => {}
                 nix::unistd::ForkResult::Parent { child } => return Ok(Some(ChildProcess(child))),
+                _ => {}
             }
         }
 
         if let Some(root) = unshare.root {
             nix::unistd::chroot(&root)
                 .with_context(|| format!("Chrooting to {}", root.display()))?;
+            nix::unistd::chdir("/").with_context(|| format!("Changing directory to /"))?;
         }
         Ok(None)
     }
 }
 
-fn write_mappings<'a>(
-    p: impl AsRef<Path>,
-    mappings: impl IntoIterator<Item = &'a IdRangeMap>,
-) -> Result<()> {
-    let mut file = std::fs::File::open(p)?;
-    for mapping in mappings.into_iter() {
-        mapping.write_to(&mut file)?;
-    }
+fn write_mappings<'a>(p: impl AsRef<Path>, mappings: &IdRanges) -> Result<()> {
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .truncate(true)
+        .open(p)
+        .context("Opening mapping file")?;
+
+    mappings.write_to(&mut file).context("Writing mapping")?;
     Ok(())
 }

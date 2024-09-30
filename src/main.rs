@@ -7,6 +7,7 @@ use nix_helpers::{ContainixFlake, NixStoreItem};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info, instrument, trace, warn, Level};
 use tracing_subscriber::{fmt, fmt::format::FmtSpan, EnvFilter};
+use unshare::{UnshareEnvironmentBuilder, UnshareNamespaces};
 use volume_mount::VolumeMount;
 
 mod cli_wrappers;
@@ -15,7 +16,6 @@ mod container;
 mod mount;
 mod nix_helpers;
 mod path_ext;
-mod tools;
 mod unshare;
 mod volume_mount;
 
@@ -72,14 +72,19 @@ fn containix_build(args: BuildArgs) -> Result<()> {
 
 #[instrument(level = "trace", skip_all, err(level = Level::TRACE))]
 fn enter_root_ns() -> Result<()> {
-    let uid = nix::unistd::getuid();
-    let gid = nix::unistd::getgid();
-    nix::sched::unshare(
-        nix::sched::CloneFlags::CLONE_NEWUSER.union(nix::sched::CloneFlags::CLONE_NEWNS),
-    )?;
-    std::fs::write("/proc/self/setgroups", "deny")?;
-    std::fs::write("/proc/self/uid_map", format!("0 {uid} 1"))?;
-    std::fs::write("/proc/self/gid_map", format!("0 {gid} 1"))?;
+    if nix::unistd::getuid().is_root() {
+        info!("Already root");
+    }
+    let mut builder = UnshareEnvironmentBuilder::default();
+    builder
+        .namespace(UnshareNamespaces::User)
+        .namespace(UnshareNamespaces::Mount)
+        .map_current_user_to_root();
+    if let Some(mut child) = builder.enter()? {
+        warn!("Entering root namespace created a child when it shouldn’t.");
+        std::process::exit(child.wait()?);
+    }
+
     Ok(())
 }
 
@@ -90,7 +95,14 @@ fn containix_run(args: RunArgs) -> Result<()> {
     let closure = store_item
         .closure()
         .context("Computing transitive closure")?;
-    debug!("Dependency closure: {closure:?}");
+    debug!(
+        "Dependency closure: {}",
+        closure
+            .iter()
+            .map(|c| c.name())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
 
     let mut container_fs = ContainerFsBuilder::default();
     for component in &closure {
@@ -118,7 +130,7 @@ fn containix_run(args: RunArgs) -> Result<()> {
     } else {
         args.args.clone()
     };
-
+    trace!("Spawning container with command: {:?}", invocation);
     let mut container_pid = container
         .spawn(
             invocation
@@ -144,6 +156,7 @@ fn containix_run(args: RunArgs) -> Result<()> {
 fn main() -> Result<()> {
     fmt()
         .with_span_events(FmtSpan::ENTER | FmtSpan::EXIT)
+        .with_target(false)
         .with_env_filter(
             EnvFilter::builder()
                 .with_default_directive(Level::INFO.into())
