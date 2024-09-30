@@ -6,6 +6,7 @@ use std::{
 use anyhow::{Context, Result};
 use derive_builder::Builder;
 use derive_more::derive::Deref;
+use tracing::{instrument, Level};
 
 use crate::container::ContainerHandle;
 
@@ -126,6 +127,7 @@ impl UnshareEnvironmentBuilder {
         self
     }
 
+    #[instrument(level = "trace", skip_all, err(level = Level::TRACE))]
     pub fn enter(self) -> Result<Option<ChildProcess>> {
         let unshare = self.build().context("Building unshare options")?;
 

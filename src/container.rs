@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use derive_builder::Builder;
 use nix::libc::execvpe;
-use tracing::{info, instrument, trace, warn};
+use tracing::{info, instrument, trace, warn, Level};
 
 use std::{
     ffi::{CString, OsStr, OsString},
@@ -54,6 +54,7 @@ impl ContainerFsBuilder {
         self
     }
 
+    #[instrument(level = "trace", skip_all, err(level = Level::TRACE))]
     pub fn build(self) -> Result<ContainerFsGuard> {
         let container = self.__build()?;
         let root = tempdir::TempDir::new("containix-container").context("Creating tempdir")?;
@@ -128,6 +129,7 @@ impl<T: AsRef<Path>> UnshareContainer<T> {
         self.root.as_ref()
     }
 
+    #[instrument(level = "trace", skip_all, err(level = Level::TRACE))]
     pub fn spawn(
         &self,
         command: impl AsRef<OsStr>,
@@ -169,6 +171,7 @@ impl<T: AsRef<Path>> UnshareContainer<T> {
     }
 }
 
+#[allow(dead_code)]
 pub trait ContainerHandle {
     /// Get the PID of the container.
     fn pid(&self) -> u32;

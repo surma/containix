@@ -60,7 +60,7 @@ struct RunArgs {
     keep_container: bool,
 }
 
-#[instrument(level = "trace", skip_all)]
+#[instrument(level = "trace", skip_all, err(level = Level::TRACE))]
 fn containix_build(args: BuildArgs) -> Result<()> {
     let store_item = args.flake.build()?;
     info!(
@@ -70,7 +70,7 @@ fn containix_build(args: BuildArgs) -> Result<()> {
     Ok(())
 }
 
-#[instrument(level = "trace", skip_all)]
+#[instrument(level = "trace", skip_all, err(level = Level::TRACE))]
 fn enter_root_ns() -> Result<()> {
     let uid = nix::unistd::getuid();
     let gid = nix::unistd::getgid();
@@ -83,7 +83,7 @@ fn enter_root_ns() -> Result<()> {
     Ok(())
 }
 
-#[instrument(level = "trace", skip_all)]
+#[instrument(level = "trace", skip_all, err(level = Level::TRACE))]
 fn containix_run(args: RunArgs) -> Result<()> {
     info!("Building container {}", args.flake);
     let store_item = args.flake.build().context("Building container flake")?;
