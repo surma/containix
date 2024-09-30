@@ -2,10 +2,10 @@ use std::mem::ManuallyDrop;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use container::{ContainerFsBuilder, ContainerHandle, UnshareContainer};
+use container::{ContainerBuilder, ContainerFsBuilder};
 use env::EnvVariable;
 use nix_helpers::ContainixFlake;
-use tracing::{debug, info, instrument, trace, warn, Level};
+use tracing::{debug, info, instrument, warn, Level};
 use tracing_subscriber::{fmt, fmt::format::FmtSpan, EnvFilter};
 use unshare::{UnshareEnvironmentBuilder, UnshareNamespaces};
 use volume_mount::VolumeMount;
@@ -55,6 +55,14 @@ struct RunArgs {
     /// Environment variables to set in the container.
     #[arg(short = 'e', long = "env", value_name = "KEY=VALUE")]
     env: Vec<EnvVariable>,
+
+    /// Set the uid of the user running the container.
+    #[arg(long = "set-uid", value_name = "UID")]
+    set_uid: Option<u32>,
+
+    /// Set the gid of the user running the container.
+    #[arg(long = "set-gid", value_name = "GID")]
+    set_gid: Option<u32>,
 
     /// Volumes to mount into the container.
     #[arg(short = 'v', long = "volume", value_name = "HOST_PATH:CONTAINER_PATH")]
@@ -117,45 +125,40 @@ fn containix_run(args: RunArgs) -> Result<()> {
 
     enter_root_ns()?;
     let container_fs = container_fs.build().context("Building container fs")?;
-    info!("Container root: {}", container_fs.display());
+    let root = container_fs.as_ref().to_path_buf();
+    info!("Container root: {}", root.display());
 
-    let mut container =
-        UnshareContainer::new(container_fs).context("Entering container namespace")?;
-    container.set_keep(args.keep_container);
+    let mut container_builder = ContainerBuilder::default()
+        .root(container_fs)
+        .env("PATH", store_item.path().join("bin"))
+        .envs(args.env);
 
-    let invocation = if args.args.is_empty() {
+    if let &[cmd, ref args @ ..] = &args.args.as_slice() {
+        container_builder = container_builder.command(cmd).args(args);
+    } else {
         let cmd = store_item.path().join("bin").join("containix-entry-point");
         let Some(cmd) = cmd.to_str() else {
             anyhow::bail!("Container flake name contains invalid utf-8");
         };
-        vec![cmd.to_string()]
-    } else {
-        args.args.clone()
+        container_builder = container_builder.command(cmd);
     };
 
-    let mut env = vec![EnvVariable::new("PATH", store_item.path().join("bin"))];
-    for env_var in args.env {
-        env.push(env_var.clone());
+    if let Some(uid) = args.set_uid {
+        container_builder = container_builder.uid(uid);
+    }
+    if let Some(gid) = args.set_gid {
+        container_builder = container_builder.gid(gid);
     }
 
-    trace!("Spawning container with command: {:?}", invocation);
-    let mut container_pid = container
-        .spawn(
-            invocation
-                .first()
-                .expect("guaranteed to have at least 1 element by code above"),
-            &invocation[1..],
-            &env,
-        )
-        .context("Spawning container")?;
+    let mut container_handle = container_builder.spawn().context("Spawning container")?;
 
-    container_pid
+    container_handle
         .wait()
         .context("Waiting for container to exit")?;
 
     if args.keep_container {
-        warn!("Not cleaning up {}", container.root().display());
-        _ = ManuallyDrop::new(container);
+        warn!("Not cleaning up {}", container_handle.root().display());
+        _ = ManuallyDrop::new(container_handle);
     }
 
     Ok(())

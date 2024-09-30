@@ -31,7 +31,8 @@
             coreutils
             util-linux
             inetutils
-            nix
+            shadow
+            su
           ];
           entryPoint = ''
             echo -e "\n# Mounts"

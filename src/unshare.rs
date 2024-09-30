@@ -8,8 +8,6 @@ use derive_builder::Builder;
 use derive_more::derive::{Deref, DerefMut};
 use tracing::{instrument, Level};
 
-use crate::container::ContainerHandle;
-
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub enum UnshareNamespaces {
@@ -81,14 +79,10 @@ impl IdRanges {
 }
 
 #[derive(Debug, Deref)]
-pub struct ChildProcess(nix::unistd::Pid);
+pub struct UnshareChild(nix::unistd::Pid);
 
-impl ContainerHandle for ChildProcess {
-    fn pid(&self) -> u32 {
-        self.0.as_raw().try_into().unwrap()
-    }
-
-    fn wait(&mut self) -> Result<i32> {
+impl UnshareChild {
+    pub fn wait(&mut self) -> Result<i32> {
         match nix::sys::wait::waitpid(self.0, None)? {
             nix::sys::wait::WaitStatus::Exited(_, status) => Ok(status),
             r => Err(anyhow::anyhow!(
@@ -148,7 +142,7 @@ impl UnshareEnvironmentBuilder {
     }
 
     #[instrument(level = "trace", skip_all, err(level = Level::TRACE))]
-    pub fn enter(self) -> Result<Option<ChildProcess>> {
+    pub fn enter(self) -> Result<Option<UnshareChild>> {
         let unshare = self.build().context("Building unshare options")?;
         // if !unshare.uid_map.is_empty() || !unshare.gid_map.is_empty() {
         //     std::fs::write("/proc/self/setgroups", "deny").context("Disallowing setgroups")?;
@@ -172,7 +166,7 @@ impl UnshareEnvironmentBuilder {
 
         if unshare.fork {
             if let nix::unistd::ForkResult::Parent { child } = unsafe { nix::unistd::fork() }? {
-                return Ok(Some(ChildProcess(child)));
+                return Ok(Some(UnshareChild(child)));
             }
         }
 

@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use derive_builder::Builder;
+use nix::unistd::{Gid, Uid};
 use tracing::{instrument, warn, Level};
 
 use std::{
@@ -12,7 +13,7 @@ use crate::{
     env::EnvVariable,
     mount::{BindMount, MountGuard},
     path_ext::PathExt,
-    unshare::{UnshareEnvironmentBuilder, UnshareNamespaces},
+    unshare::{UnshareChild, UnshareEnvironmentBuilder, UnshareNamespaces},
     volume_mount::VolumeMount,
 };
 
@@ -118,32 +119,53 @@ impl AsRef<Path> for ContainerFsGuard {
     }
 }
 
-#[derive(Debug)]
-pub struct UnshareContainer<T: AsRef<Path>> {
+#[derive(Debug, Builder)]
+#[builder(pattern = "owned")]
+#[builder(build_fn(name = __build, vis = ""))]
+pub struct Container<T: AsRef<Path>> {
     root: T,
-    keep: bool,
+    #[builder(default, setter(strip_option, into))]
+    uid: Option<u32>,
+    #[builder(default, setter(strip_option, into))]
+    gid: Option<u32>,
+    #[builder(default, setter(custom, name = "env"))]
+    envs: Vec<EnvVariable>,
+    #[builder(setter(into))]
+    command: String,
+    #[builder(default, setter(custom, name = "arg"))]
+    args: Vec<String>,
 }
 
-impl<T: AsRef<Path>> UnshareContainer<T> {
-    pub fn new(root: T) -> Result<Self> {
-        Ok(Self { root, keep: false })
+#[allow(dead_code)]
+impl<T: AsRef<Path>> ContainerBuilder<T> {
+    pub fn env(self, key: impl AsRef<OsStr>, value: impl AsRef<OsStr>) -> Self {
+        self.envs([EnvVariable::new(key, value)])
     }
 
-    pub fn set_keep(&mut self, keep: bool) {
-        self.keep = keep;
+    pub fn envs(mut self, envs: impl IntoIterator<Item = EnvVariable>) -> Self {
+        self.envs
+            .get_or_insert_with(std::vec::Vec::new)
+            .extend(envs);
+        self
     }
 
-    pub fn root(&self) -> &Path {
-        self.root.as_ref()
+    pub fn arg(mut self, arg: impl AsRef<str>) -> Self {
+        self.args
+            .get_or_insert_with(std::vec::Vec::new)
+            .push(arg.as_ref().to_string());
+        self
+    }
+
+    pub fn args(mut self, args: impl IntoIterator<Item = impl AsRef<str>>) -> Self {
+        self.args
+            .get_or_insert_with(std::vec::Vec::new)
+            .extend(args.into_iter().map(|v| v.as_ref().to_string()));
+        self
     }
 
     #[instrument(level = "trace", skip_all, err(level = Level::TRACE))]
-    pub fn spawn<'a>(
-        &self,
-        command: impl AsRef<OsStr>,
-        args: impl IntoIterator<Item = impl AsRef<OsStr>>,
-        env: impl IntoIterator<Item = &'a EnvVariable>,
-    ) -> Result<impl ContainerHandle> {
+    pub fn spawn<'a>(self) -> Result<ContainerGuard<T>> {
+        let opts = self.__build()?;
         let mut unshare_builder = UnshareEnvironmentBuilder::default();
         unshare_builder
             .namespace(UnshareNamespaces::Mount)
@@ -152,41 +174,65 @@ impl<T: AsRef<Path>> UnshareContainer<T> {
             .namespace(UnshareNamespaces::User)
             .namespace(UnshareNamespaces::Uts)
             .map_current_user_to_root()
-            .root(self.root())
+            .root(opts.root.as_ref())
             .fork(true);
 
         // .namespace(UnshareNamespaces::Network)
 
-        let env_vars = env
+        let env_vars = opts
+            .envs
             .into_iter()
             .map(|v| Ok(CString::new(v.to_os_string().as_encoded_bytes())?))
             .collect::<Result<Vec<_>>>()
             .context("Building env var list")?;
 
-        match unshare_builder
+        if let Some(handle) = unshare_builder
             .enter()
             .context("Entering unshare environment")?
         {
-            None => {
-                nix::unistd::execvpe(
-                    CString::new(command.as_ref().as_encoded_bytes())?.as_c_str(),
-                    &args
-                        .into_iter()
-                        .map(|s| Ok(CString::new(s.as_ref().as_encoded_bytes())?))
-                        .collect::<Result<Vec<_>>>()?,
-                    &env_vars,
-                )?;
-                unreachable!()
-            }
-            Some(handle) => Ok(handle),
+            return Ok(ContainerGuard {
+                handle,
+                root: opts.root,
+            });
         }
+
+        if let Some(uid) = opts.uid {
+            nix::unistd::setuid(Uid::from_raw(uid))?;
+        }
+        if let Some(gid) = opts.gid {
+            nix::unistd::setgid(Gid::from_raw(gid))?;
+        }
+        nix::unistd::execvpe(
+            CString::new(opts.command.as_bytes())?.as_c_str(),
+            &opts
+                .args
+                .into_iter()
+                .map(|s| Ok(CString::new(s.as_bytes())?))
+                .collect::<Result<Vec<_>>>()?,
+            &env_vars,
+        )?;
+        unreachable!("Execvpe does not return except in case of error, which is handled by `?`")
     }
 }
 
-#[allow(dead_code)]
-pub trait ContainerHandle {
-    /// Get the PID of the container.
-    fn pid(&self) -> u32;
-    /// Wait for the container to exit and return the exit code.
-    fn wait(&mut self) -> Result<i32>;
+#[derive(Debug)]
+pub struct ContainerGuard<T: AsRef<Path>> {
+    handle: UnshareChild,
+    root: T,
+}
+
+impl<T: AsRef<Path>> AsRef<Path> for ContainerGuard<T> {
+    fn as_ref(&self) -> &Path {
+        self.root.as_ref()
+    }
+}
+
+impl<T: AsRef<Path>> ContainerGuard<T> {
+    pub fn wait(&mut self) -> Result<i32> {
+        self.handle.wait()
+    }
+
+    pub fn root(&self) -> &Path {
+        self.root.as_ref()
+    }
 }
