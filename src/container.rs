@@ -9,6 +9,7 @@ use std::{
 };
 
 use crate::{
+    env::EnvVariable,
     mount::{BindMount, MountGuard},
     path_ext::PathExt,
     unshare::{UnshareEnvironmentBuilder, UnshareNamespaces},
@@ -137,11 +138,11 @@ impl<T: AsRef<Path>> UnshareContainer<T> {
     }
 
     #[instrument(level = "trace", skip_all, err(level = Level::TRACE))]
-    pub fn spawn(
+    pub fn spawn<'a>(
         &self,
         command: impl AsRef<OsStr>,
         args: impl IntoIterator<Item = impl AsRef<OsStr>>,
-        path_var: impl AsRef<OsStr>,
+        env: impl IntoIterator<Item = &'a EnvVariable>,
     ) -> Result<impl ContainerHandle> {
         let mut unshare_builder = UnshareEnvironmentBuilder::default();
         unshare_builder
@@ -156,6 +157,12 @@ impl<T: AsRef<Path>> UnshareContainer<T> {
 
         // .namespace(UnshareNamespaces::Network)
 
+        let env_vars = env
+            .into_iter()
+            .map(|v| Ok(CString::new(v.to_os_string().as_encoded_bytes())?))
+            .collect::<Result<Vec<_>>>()
+            .context("Building env var list")?;
+
         match unshare_builder
             .enter()
             .context("Entering unshare environment")?
@@ -167,11 +174,7 @@ impl<T: AsRef<Path>> UnshareContainer<T> {
                         .into_iter()
                         .map(|s| Ok(CString::new(s.as_ref().as_encoded_bytes())?))
                         .collect::<Result<Vec<_>>>()?,
-                    // FIXME: Should probably avoid lossy function here
-                    &[CString::new(format!(
-                        "PATH={}",
-                        path_var.as_ref().to_string_lossy()
-                    ))?],
+                    &env_vars,
                 )?;
                 unreachable!()
             }

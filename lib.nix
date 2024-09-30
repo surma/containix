@@ -26,13 +26,8 @@ let
         paths = packages;
       };
 
-      env = ({
-        HOME = "/root";
-        PATH = "${packageEnv}/bin";
-      }) // envs;
-
       env_setup = lib.strings.concatLines (
-        lib.attrsets.mapAttrsToList (name: value: "export ${name}=${value}") env
+        lib.attrsets.mapAttrsToList (name: value: "export ${name}=${value}") envs
       );
     in
     writeShellScriptBin "containix-entry-point" ''
@@ -43,6 +38,7 @@ let
       mkdir /proc
       mount -t proc proc /proc
 
+      export PATH=${packageEnv}/bin
       ${env_setup}
       exec ${writeShellScriptBin "containix-entry-point" entryPoint}/bin/containix-entry-point
     '';

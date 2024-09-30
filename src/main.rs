@@ -3,6 +3,7 @@ use std::mem::ManuallyDrop;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use container::{ContainerFsBuilder, ContainerHandle, UnshareContainer};
+use env::EnvVariable;
 use nix_helpers::ContainixFlake;
 use tracing::{debug, info, instrument, trace, warn, Level};
 use tracing_subscriber::{fmt, fmt::format::FmtSpan, EnvFilter};
@@ -12,6 +13,7 @@ use volume_mount::VolumeMount;
 mod cli_wrappers;
 mod command;
 mod container;
+mod env;
 mod mount;
 mod nix_helpers;
 mod path_ext;
@@ -49,6 +51,10 @@ struct RunArgs {
     /// Arguments to pass to the command.
     #[arg(trailing_var_arg = true)]
     args: Vec<String>,
+
+    /// Environment variables to set in the container.
+    #[arg(short = 'e', long = "env", value_name = "KEY=VALUE")]
+    env: Vec<EnvVariable>,
 
     /// Volumes to mount into the container.
     #[arg(short = 'v', long = "volume", value_name = "HOST_PATH:CONTAINER_PATH")]
@@ -126,6 +132,12 @@ fn containix_run(args: RunArgs) -> Result<()> {
     } else {
         args.args.clone()
     };
+
+    let mut env = vec![EnvVariable::new("PATH", store_item.path().join("bin"))];
+    for env_var in args.env {
+        env.push(env_var.clone());
+    }
+
     trace!("Spawning container with command: {:?}", invocation);
     let mut container_pid = container
         .spawn(
@@ -133,7 +145,7 @@ fn containix_run(args: RunArgs) -> Result<()> {
                 .first()
                 .expect("guaranteed to have at least 1 element by code above"),
             &invocation[1..],
-            store_item.path().join("bin"),
+            &env,
         )
         .context("Spawning container")?;
 
