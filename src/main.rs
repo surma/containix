@@ -72,9 +72,6 @@ fn containix_build(args: BuildArgs) -> Result<()> {
 
 #[instrument(level = "trace", skip_all, err(level = Level::TRACE))]
 fn enter_root_ns() -> Result<()> {
-    if nix::unistd::getuid().is_root() {
-        info!("Already root");
-    }
     let mut builder = UnshareEnvironmentBuilder::default();
     builder
         .namespace(UnshareNamespaces::User)

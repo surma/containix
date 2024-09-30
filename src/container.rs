@@ -11,7 +11,7 @@ use std::{
 };
 
 use crate::{
-    mount::{bind_mount, MountGuard},
+    mount::{BindMount, MountGuard},
     path_ext::PathExt,
     unshare::{UnshareEnvironmentBuilder, UnshareNamespaces},
     volume_mount::VolumeMount,
@@ -22,10 +22,10 @@ use crate::{
 pub struct ContainerFs {
     #[builder(default, setter(into, strip_option))]
     rootfs: Option<PathBuf>,
-    #[builder(default, setter(custom))]
-    volume: Vec<VolumeMount>,
-    #[builder(default, setter(custom))]
-    nix_component: Vec<PathBuf>,
+    #[builder(default, setter(custom, name = "volume"))]
+    volumes: Vec<VolumeMount>,
+    #[builder(default, setter(custom, name = "nix_component"))]
+    nix_components: Vec<PathBuf>,
 }
 
 #[allow(dead_code)]
@@ -40,12 +40,14 @@ pub struct ContainerFsGuard {
 
 impl ContainerFsBuilder {
     pub fn volume(&mut self, volume_mount: VolumeMount) -> &mut Self {
-        self.volume.get_or_insert_with(|| vec![]).push(volume_mount);
+        self.volumes
+            .get_or_insert_with(|| vec![])
+            .push(volume_mount);
         self
     }
 
     pub fn nix_component(&mut self, nix_mount: impl AsRef<Path>) -> &mut Self {
-        self.nix_component
+        self.nix_components
             .get_or_insert_with(|| vec![])
             .push(nix_mount.as_ref().to_path_buf());
         self
@@ -61,25 +63,35 @@ impl ContainerFsBuilder {
         }
 
         let nix_mounts = container
-            .nix_component
+            .nix_components
             .into_iter()
             .map(|item| {
                 let target = root.path().join(item.rootless());
                 std::fs::create_dir_all(&target)?;
-                bind_mount(&item, &target, true)
+                BindMount::default()
+                    .src(&item)
+                    .dest(&target)
+                    .read_only(true)
+                    .cleanup(false)
+                    .mount()
                     .with_context(|| format!("Mounting {}", item.display()))
             })
             .collect::<Result<Vec<_>>>()?;
 
         let volume_mounts = container
-            .volume
+            .volumes
             .into_iter()
             .map(|volume_mount| {
                 let src = volume_mount.host_path.as_path();
                 let dest = root.path().join(volume_mount.container_path.rootless());
                 std::fs::create_dir_all(&dest)
                     .with_context(|| format!("Creating directory {dest:?} for volume mount"))?;
-                bind_mount(&src, &dest, volume_mount.read_only)
+                BindMount::default()
+                    .src(&src)
+                    .dest(&dest)
+                    .read_only(volume_mount.read_only)
+                    .cleanup(false)
+                    .mount()
                     .with_context(|| format!("Mounting {src:?} -> {dest:?}"))
             })
             .collect::<Result<Vec<_>>>()
@@ -140,10 +152,11 @@ impl<T: AsRef<Path>> UnshareContainer<T> {
             .namespace(UnshareNamespaces::IPC)
             .namespace(UnshareNamespaces::User)
             .namespace(UnshareNamespaces::UTS)
-            // .namespace(UnshareNamespaces::Network)
             .map_current_user_to_root()
             .root(self.root())
             .fork(true);
+
+        // .namespace(UnshareNamespaces::Network)
 
         match unshare_builder
             .enter()

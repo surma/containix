@@ -101,12 +101,12 @@ impl ContainerHandle for ChildProcess {
 #[derive(Debug, Builder)]
 #[builder(build_fn(name = "build", vis = ""))]
 pub struct UnshareEnvironment {
-    #[builder(default, setter(custom))]
-    namespace: Vec<UnshareNamespaces>,
-    #[builder(default, setter(custom))]
-    uid_map: IdRanges,
-    #[builder(default, setter(custom))]
-    gid_map: IdRanges,
+    #[builder(default, setter(custom, name = "namespace"))]
+    namespaces: Vec<UnshareNamespaces>,
+    #[builder(default, setter(custom, name = "uid_map"))]
+    uid_maps: IdRanges,
+    #[builder(default, setter(custom, name = "gid_map"))]
+    gid_maps: IdRanges,
     #[builder(default)]
     fork: bool,
     #[builder(default, setter(strip_option, into))]
@@ -116,21 +116,23 @@ pub struct UnshareEnvironment {
 #[allow(dead_code)]
 impl UnshareEnvironmentBuilder {
     pub fn uid_map(&mut self, uid_map: IdRangeMap) -> &mut Self {
-        self.uid_map
+        self.uid_maps
             .get_or_insert_with(|| Default::default())
             .push(uid_map);
         self
     }
 
     pub fn gid_map(&mut self, gid_map: IdRangeMap) -> &mut Self {
-        self.gid_map
+        self.gid_maps
             .get_or_insert_with(|| Default::default())
             .push(gid_map);
         self
     }
 
     pub fn namespace(&mut self, namespace: UnshareNamespaces) -> &mut Self {
-        self.namespace.get_or_insert_with(|| vec![]).push(namespace);
+        self.namespaces
+            .get_or_insert_with(|| vec![])
+            .push(namespace);
         self
     }
 
@@ -155,17 +157,17 @@ impl UnshareEnvironmentBuilder {
         // }
 
         let clone_flags = unshare
-            .namespace
+            .namespaces
             .into_iter()
             .fold(nix::sched::CloneFlags::empty(), |flags, namespace| {
                 flags.union(namespace.into())
             });
         nix::sched::unshare(clone_flags).context("Entering new namespace")?;
 
-        if !unshare.uid_map.is_empty() || !unshare.gid_map.is_empty() {
+        if !unshare.uid_maps.is_empty() || !unshare.gid_maps.is_empty() {
             std::fs::write("/proc/self/setgroups", "deny").context("Disallowing setgroups")?;
-            write_mappings("/proc/self/uid_map", &unshare.uid_map).context("Writing uid map")?;
-            write_mappings("/proc/self/gid_map", &unshare.gid_map).context("Writing gid map")?;
+            write_mappings("/proc/self/uid_map", &unshare.uid_maps).context("Writing uid map")?;
+            write_mappings("/proc/self/gid_map", &unshare.gid_maps).context("Writing gid map")?;
         }
 
         if unshare.fork {

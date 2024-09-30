@@ -1,42 +1,67 @@
 use anyhow::Result;
+use derive_builder::Builder;
 use derive_more::derive::Deref;
 use std::path::{Path, PathBuf};
-use tracing::{error, instrument};
+use tracing::{error, instrument, trace};
 
 #[derive(Debug, Deref, PartialEq)]
-pub struct MountGuard(PathBuf);
+pub struct MountGuard(Option<PathBuf>);
 impl Drop for MountGuard {
     fn drop(&mut self) {
-        if let Err(err) = unmount(&self.0) {
-            error!("Failed to unmount {}: {}", self.0.display(), err);
+        let Some(path) = &self.0 else {
+            return;
+        };
+        if let Err(err) = unmount(&path) {
+            error!("Failed to unmount {}: {}", path.display(), err);
         }
     }
 }
 
-#[instrument(level = "trace", skip_all, fields(src = %src.as_ref().display(), target_dir = %target_dir.as_ref().display(), read_only = %read_only), err(level = "trace"))]
-pub fn bind_mount(
-    src: impl AsRef<Path>,
-    target_dir: impl AsRef<Path>,
+#[derive(Debug, Clone, Builder)]
+#[builder(name = "BindMount", setter(into))]
+#[builder(build_fn(vis = ""))]
+pub struct BindMountOptions {
+    src: PathBuf,
+    dest: PathBuf,
+    #[builder(default)]
     read_only: bool,
-) -> Result<MountGuard> {
-    use nix::mount::MsFlags;
+    #[builder(default = "true")]
+    cleanup: bool,
+}
 
-    let src = src.as_ref();
-    let target_dir = target_dir.as_ref();
-    nix::mount::mount(
-        Some(src),
-        target_dir,
-        Option::<&str>::None,
-        MsFlags::MS_BIND
-            | (if read_only {
+impl BindMount {
+    #[instrument(level = "trace", skip_all, err(level = "trace"))]
+    pub fn mount(&mut self) -> Result<MountGuard> {
+        let opts = self.build()?;
+        trace!("Mounting {opts:?}");
+        use nix::mount::MsFlags;
+
+        nix::mount::mount(
+            Some(&opts.src),
+            &opts.dest,
+            Option::<&str>::None,
+            MsFlags::MS_BIND.union(if opts.read_only {
                 MsFlags::MS_RDONLY
             } else {
                 MsFlags::empty()
             }),
-        Option::<&str>::None,
-    )?;
-    Ok(MountGuard(target_dir.into()))
+            Option::<&str>::None,
+        )?;
+        Ok(MountGuard(if opts.cleanup {
+            Some(opts.dest)
+        } else {
+            None
+        }))
+    }
 }
+
+// #[instrument(level = "trace", skip_all, fields(src = %src.as_ref().display(), target_dir = %target_dir.as_ref().display(), read_only = %read_only), err(level = "trace"))]
+// pub fn bind_mount(
+//     src: impl AsRef<Path>,
+//     target_dir: impl AsRef<Path>,
+//     read_only: bool,
+// ) -> Result<MountGuard> {
+// }
 
 #[instrument(level = "trace", skip_all, fields(path = %path.as_ref().display()), err(level = "trace"))]
 pub fn unmount(path: impl AsRef<Path>) -> Result<()> {
