@@ -1,16 +1,19 @@
 use anyhow::{Context, Result};
 use derive_builder::Builder;
-use nix::unistd::{Gid, Uid};
-use tracing::{instrument, warn, Level};
+use nix::unistd::{Gid, Pid, Uid};
+use tracing::{error, instrument, warn, Level};
 
 use std::{
     ffi::{CString, OsStr},
     ops::Deref,
     path::{Path, PathBuf},
+    process::Child,
 };
 
 use crate::{
+    cli_wrappers::slirp::Slirp,
     env::EnvVariable,
+    host_tools::get_host_tools,
     mount::{BindMount, MountGuard},
     path_ext::PathExt,
     unshare::{UnshareChild, UnshareEnvironmentBuilder, UnshareNamespaces},
@@ -35,7 +38,8 @@ pub struct ContainerFsGuard {
     // https://doc.rust-lang.org/stable/std/ops/trait.Drop.html#drop-order
     volume_mounts: Vec<MountGuard>,
     nix_mounts: Vec<MountGuard>,
-    root: tempdir::TempDir,
+    tempdir: tempdir::TempDir,
+    root: PathBuf,
 }
 
 impl ContainerFsBuilder {
@@ -56,7 +60,10 @@ impl ContainerFsBuilder {
     #[instrument(level = "trace", skip_all, err(level = Level::TRACE))]
     pub fn build(self) -> Result<ContainerFsGuard> {
         let container = self.__build()?;
-        let root = tempdir::TempDir::new("containix-container").context("Creating tempdir")?;
+        let tempdir = tempdir::TempDir::new("containix-container").context("Creating tempdir")?;
+        let root = tempdir.path().join("root");
+        std::fs::create_dir_all(&root)
+            .with_context(|| format!("Creating rootfs at {}", root.display()))?;
 
         if container.rootfs.is_some() {
             warn!("Not sure how rootfs got set, but it isn’t supported yet.");
@@ -66,7 +73,7 @@ impl ContainerFsBuilder {
             .nix_components
             .into_iter()
             .map(|item| {
-                let target = root.path().join(item.rootless());
+                let target = root.join(item.rootless());
                 std::fs::create_dir_all(&target)?;
                 BindMount::default()
                     .src(&item)
@@ -83,7 +90,7 @@ impl ContainerFsBuilder {
             .into_iter()
             .map(|volume_mount| {
                 let src = volume_mount.host_path.as_path();
-                let dest = root.path().join(volume_mount.container_path.rootless());
+                let dest = root.join(volume_mount.container_path.rootless());
                 std::fs::create_dir_all(&dest)
                     .with_context(|| format!("Creating directory {dest:?} for volume mount"))?;
                 BindMount::default()
@@ -100,8 +107,15 @@ impl ContainerFsBuilder {
         Ok(ContainerFsGuard {
             volume_mounts,
             nix_mounts,
+            tempdir,
             root,
         })
+    }
+}
+
+impl ContainerFsGuard {
+    fn tmpdir(&self) -> &Path {
+        self.tempdir.path()
     }
 }
 
@@ -109,7 +123,7 @@ impl Deref for ContainerFsGuard {
     type Target = Path;
 
     fn deref(&self) -> &Self::Target {
-        self.root.path()
+        &self.root
     }
 }
 
@@ -122,8 +136,8 @@ impl AsRef<Path> for ContainerFsGuard {
 #[derive(Debug, Builder)]
 #[builder(pattern = "owned")]
 #[builder(build_fn(name = __build, vis = ""))]
-pub struct Container<T: AsRef<Path>> {
-    root: T,
+pub struct Container {
+    root: ContainerFsGuard,
     #[builder(default, setter(strip_option, into))]
     uid: Option<u32>,
     #[builder(default, setter(strip_option, into))]
@@ -137,7 +151,7 @@ pub struct Container<T: AsRef<Path>> {
 }
 
 #[allow(dead_code)]
-impl<T: AsRef<Path>> ContainerBuilder<T> {
+impl ContainerBuilder {
     pub fn env(self, key: impl AsRef<OsStr>, value: impl AsRef<OsStr>) -> Self {
         self.envs([EnvVariable::new(key, value)])
     }
@@ -164,7 +178,7 @@ impl<T: AsRef<Path>> ContainerBuilder<T> {
     }
 
     #[instrument(level = "trace", skip_all, err(level = Level::TRACE))]
-    pub fn spawn<'a>(self) -> Result<ContainerGuard<T>> {
+    pub fn spawn<'a>(self) -> Result<ContainerGuard> {
         let opts = self.__build()?;
         let mut unshare_builder = UnshareEnvironmentBuilder::default();
         unshare_builder
@@ -173,11 +187,10 @@ impl<T: AsRef<Path>> ContainerBuilder<T> {
             .namespace(UnshareNamespaces::Ipc)
             .namespace(UnshareNamespaces::User)
             .namespace(UnshareNamespaces::Uts)
+            .namespace(UnshareNamespaces::Network)
             .map_current_user_to_root()
             .root(opts.root.as_ref())
             .fork(true);
-
-        // .namespace(UnshareNamespaces::Network)
 
         let env_vars = opts
             .envs
@@ -190,9 +203,24 @@ impl<T: AsRef<Path>> ContainerBuilder<T> {
             .enter()
             .context("Entering unshare environment")?
         {
+            let slirp = match unsafe { nix::unistd::fork() }? {
+                nix::unistd::ForkResult::Parent { child, .. } => child,
+                nix::unistd::ForkResult::Child => {
+                    let result = Slirp::default()
+                        .binary(get_host_tools().join("bin").join("slirp4netns"))
+                        .pid(u32::try_from(handle.as_raw()).unwrap())
+                        .socket(opts.root.tempdir.path().join("slirp.sock"))
+                        .activate()
+                        .context("Activating slirp")?
+                        .wait()?;
+                    std::process::exit(result.code().unwrap_or(1));
+                }
+            };
+
             return Ok(ContainerGuard {
                 handle,
                 root: opts.root,
+                slirp,
             });
         }
 
@@ -216,18 +244,19 @@ impl<T: AsRef<Path>> ContainerBuilder<T> {
 }
 
 #[derive(Debug)]
-pub struct ContainerGuard<T: AsRef<Path>> {
+pub struct ContainerGuard {
     handle: UnshareChild,
-    root: T,
+    root: ContainerFsGuard,
+    slirp: Pid,
 }
 
-impl<T: AsRef<Path>> AsRef<Path> for ContainerGuard<T> {
+impl AsRef<Path> for ContainerGuard {
     fn as_ref(&self) -> &Path {
         self.root.as_ref()
     }
 }
 
-impl<T: AsRef<Path>> ContainerGuard<T> {
+impl ContainerGuard {
     pub fn wait(&mut self) -> Result<i32> {
         self.handle.wait()
     }

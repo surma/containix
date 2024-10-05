@@ -46,6 +46,10 @@
         packages = {
           default = packages.containix;
           containix = callPackage (import ./default.nix) { crate2nix = crate2nix'; };
+          host-tools = buildEnv {
+            name = "host-tools";
+            paths = with pkgs; [ slirp4netns ];
+          };
         };
 
         lib = callPackage (import ./lib.nix) { };

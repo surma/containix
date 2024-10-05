@@ -18,7 +18,7 @@ pub enum FlakeOutputSymlink {
 #[derive(Debug, Builder)]
 #[builder(build_fn(name = finish, vis = ""))]
 #[builder(name = "NixBuild")]
-pub struct NixBuildOpt {
+pub struct NixBuildInvocation {
     #[builder(setter(custom))]
     arg: Vec<String>,
     #[builder(default)]
@@ -40,16 +40,16 @@ impl NixBuild {
     }
 
     pub fn run<I: DeserializeOwned>(self) -> Result<I> {
-        let nix_opts = self.finish()?;
+        let invocation = self.finish()?;
 
         let mut cmd = Command::new("nix");
-        cmd.args(&nix_opts.arg);
+        cmd.args(&invocation.arg);
 
-        if nix_opts.json {
+        if invocation.json {
             cmd.arg("--json");
         }
 
-        if let Some(lock_file) = &nix_opts.lock_file {
+        if let Some(lock_file) = &invocation.lock_file {
             cmd.arg("--reference-lock-file")
                 .arg(lock_file)
                 .arg("--output-lock-file")
@@ -58,11 +58,11 @@ impl NixBuild {
             cmd.arg("--no-write-lock-file");
         }
 
-        if nix_opts.quiet {
+        if invocation.quiet {
             cmd.arg("--quiet");
         }
 
-        match nix_opts.symlink {
+        match invocation.symlink {
             FlakeOutputSymlink::None => {
                 cmd.arg("--no-link");
             }
@@ -82,7 +82,7 @@ impl NixBuild {
 #[derive(Debug, Builder)]
 #[builder(build_fn(name = finish, vis = ""))]
 #[builder(name = "NixEval")]
-pub struct NixEvalOpt {
+pub struct NixEvalInvocation {
     #[builder(default)]
     impure: bool,
     #[builder(default)]
@@ -93,20 +93,20 @@ pub struct NixEvalOpt {
 
 impl NixEval {
     pub fn run<I: DeserializeOwned>(self) -> Result<I> {
-        let nix_opts = self.finish()?;
+        let invocation = self.finish()?;
 
         let mut cmd = Command::new("nix");
         cmd.arg("eval");
 
-        if nix_opts.json {
+        if invocation.json {
             cmd.arg("--json");
         }
 
-        if nix_opts.impure {
+        if invocation.impure {
             cmd.arg("--impure");
         }
 
-        cmd.arg("--expr").arg(&nix_opts.expression);
+        cmd.arg("--expr").arg(&invocation.expression);
 
         let output = run_command(cmd).context("Running nix command")?;
         let output = serde_json::from_str(&String::from_utf8(output.stdout)?)

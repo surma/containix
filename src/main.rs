@@ -1,9 +1,10 @@
-use std::mem::ManuallyDrop;
+use std::{mem::ManuallyDrop, path::PathBuf};
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use container::{ContainerBuilder, ContainerFsBuilder};
 use env::EnvVariable;
+use host_tools::setup_host_tools;
 use nix_helpers::ContainixFlake;
 use tracing::{debug, info, instrument, warn, Level};
 use tracing_subscriber::{fmt, fmt::format::FmtSpan, EnvFilter};
@@ -14,6 +15,7 @@ mod cli_wrappers;
 mod command;
 mod container;
 mod env;
+mod host_tools;
 mod mount;
 mod nix_helpers;
 mod path_ext;
@@ -71,6 +73,14 @@ struct RunArgs {
     /// Keep the container root directory after the command has run.
     #[arg(short = 'k', long = "keep")]
     keep_container: bool,
+
+    /// Path to host tools.
+    #[arg(
+        long = "host-tools",
+        value_name = "PATH or FLAKE",
+        default_value = "github:surma/containix#host-tools"
+    )]
+    host_tools: String,
 }
 
 #[instrument(level = "trace", skip_all, err(level = Level::TRACE))]
@@ -100,6 +110,7 @@ fn enter_root_ns() -> Result<()> {
 
 #[instrument(level = "trace", skip_all, err(level = Level::TRACE))]
 fn containix_run(args: RunArgs) -> Result<()> {
+    setup_host_tools(&args.host_tools)?;
     info!("Building container {}", args.flake);
     let store_item = args.flake.build().context("Building container flake")?;
     let closure = store_item

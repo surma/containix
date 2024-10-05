@@ -33,6 +33,7 @@
             inetutils
             shadow
             su
+            iproute2
           ];
           entryPoint = ''
             echo -e "\n# Mounts"
