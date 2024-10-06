@@ -51,6 +51,7 @@ pub fn run_command(command: Command) -> Result<Output> {
 
 pub trait ChildProcess {
     fn wait(&mut self) -> Result<Option<i32>>;
+    fn kill(&mut self) -> Result<()>;
     fn pid(&self) -> u32;
 }
 
@@ -70,6 +71,12 @@ impl ChildProcess for NixUnistdChild {
             _ => Ok(None),
         }
     }
+
+    fn kill(&mut self) -> Result<()> {
+        _ = nix::sys::signal::kill(self.0, nix::sys::signal::Signal::SIGTERM);
+        Ok(())
+    }
+
     fn pid(&self) -> u32 {
         self.0.as_raw().try_into().unwrap()
     }
@@ -85,6 +92,12 @@ impl ChildProcess for std::process::Child {
     fn wait(&mut self) -> Result<Option<i32>> {
         Ok(self.wait()?.code())
     }
+
+    fn kill(&mut self) -> Result<()> {
+        self.kill()?;
+        Ok(())
+    }
+
     fn pid(&self) -> u32 {
         self.id() as u32
     }

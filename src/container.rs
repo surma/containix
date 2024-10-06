@@ -243,3 +243,11 @@ impl<T: ChildProcess, T2: ChildProcess> ContainerGuard<T, T2> {
         self.root.as_ref()
     }
 }
+
+impl<T: ChildProcess, T2: ChildProcess> Drop for ContainerGuard<T, T2> {
+    fn drop(&mut self) {
+        if let Err(e) = self.slirp.kill() {
+            error!("Failed to kill slirp: {e}");
+        }
+    }
+}
