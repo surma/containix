@@ -58,12 +58,6 @@ pub trait ChildProcess {
 #[derive(Debug, Deref)]
 pub struct NixUnistdChild(nix::unistd::Pid);
 
-impl Drop for NixUnistdChild {
-    fn drop(&mut self) {
-        _ = nix::sys::signal::kill(self.0, nix::sys::signal::Signal::SIGTERM);
-    }
-}
-
 impl ChildProcess for NixUnistdChild {
     fn wait(&mut self) -> Result<Option<i32>> {
         match nix::sys::wait::waitpid(self.0, None)? {

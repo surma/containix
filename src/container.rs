@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
+use containix::tempdir::TempDir;
 use derive_builder::Builder;
-use derive_more::derive::{Deref, DerefMut};
+use derive_more::derive::{Deref, DerefMut, From, Into};
 use nix::unistd::{Gid, Pid, Uid};
 use tracing::{error, info, instrument, trace, warn, Level};
 
@@ -34,17 +35,6 @@ pub struct ContainerFs {
     nix_components: Vec<PathBuf>,
 }
 
-#[allow(dead_code)]
-#[derive(Debug)]
-pub struct ContainerFsGuard {
-    // Order is important here, as drop runs in order of declaration.
-    // https://doc.rust-lang.org/stable/std/ops/trait.Drop.html#drop-order
-    volume_mounts: Vec<MountGuard>,
-    nix_mounts: Vec<MountGuard>,
-    tempdir: tempdir::TempDir,
-    root: PathBuf,
-}
-
 impl ContainerFsBuilder {
     pub fn volume(&mut self, volume_mount: VolumeMount) -> &mut Self {
         self.volumes
@@ -63,8 +53,8 @@ impl ContainerFsBuilder {
     #[instrument(level = "trace", skip_all, err(level = Level::TRACE))]
     pub fn build(self) -> Result<ContainerFsGuard> {
         let container = self.__build()?;
-        let tempdir = tempdir::TempDir::new("containix-container").context("Creating tempdir")?;
-        let root = tempdir.path().join("root");
+        let tempdir = TempDir::with_prefix("containix-container").context("Creating tempdir")?;
+        let root = tempdir.join("root");
         std::fs::create_dir_all(&root)
             .with_context(|| format!("Creating rootfs at {}", root.display()))?;
 
@@ -82,7 +72,6 @@ impl ContainerFsBuilder {
                     .src(&item)
                     .dest(&target)
                     .read_only(true)
-                    .cleanup(false)
                     .mount()
                     .with_context(|| format!("Mounting {}", item.display()))
             })
@@ -100,7 +89,6 @@ impl ContainerFsBuilder {
                     .src(src)
                     .dest(&dest)
                     .read_only(volume_mount.read_only)
-                    .cleanup(false)
                     .mount()
                     .with_context(|| format!("Mounting {src:?} -> {dest:?}"))
             })
@@ -116,10 +104,15 @@ impl ContainerFsBuilder {
     }
 }
 
-impl ContainerFsGuard {
-    fn tmpdir(&self) -> &Path {
-        self.tempdir.path()
-    }
+#[allow(dead_code)]
+#[derive(Debug)]
+pub struct ContainerFsGuard {
+    // Order is important here, as drop runs in order of declaration.
+    // https://doc.rust-lang.org/stable/std/ops/trait.Drop.html#drop-order
+    volume_mounts: Vec<MountGuard>,
+    nix_mounts: Vec<MountGuard>,
+    tempdir: TempDir,
+    root: PathBuf,
 }
 
 impl Deref for ContainerFsGuard {
@@ -211,7 +204,7 @@ impl ContainerBuilder {
         let slirp = Slirp::default()
             .binary(get_host_tools().join("bin").join("slirp4netns"))
             .pid(handle.pid())
-            .socket(opts.root.tempdir.path().join("slirp.sock"))
+            .socket(opts.root.tempdir.join("slirp.sock"))
             .activate()
             .context("Activating slirp")?;
 
@@ -246,6 +239,9 @@ impl<T: ChildProcess, T2: ChildProcess> ContainerGuard<T, T2> {
 
 impl<T: ChildProcess, T2: ChildProcess> Drop for ContainerGuard<T, T2> {
     fn drop(&mut self) {
+        if let Err(e) = self.handle.kill() {
+            error!("Failed to kill container: {e}");
+        }
         if let Err(e) = self.slirp.kill() {
             error!("Failed to kill slirp: {e}");
         }
