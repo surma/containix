@@ -2,11 +2,12 @@ use std::{mem::ManuallyDrop, path::PathBuf};
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
+use command::ChildProcess;
 use container::{ContainerBuilder, ContainerFsBuilder};
 use env::EnvVariable;
 use host_tools::setup_host_tools;
 use nix_helpers::ContainixFlake;
-use tracing::{debug, info, instrument, warn, Level};
+use tracing::{debug, info, instrument, trace, warn, Level};
 use tracing_subscriber::{fmt, fmt::format::FmtSpan, EnvFilter};
 use unshare::{UnshareEnvironmentBuilder, UnshareNamespaces};
 use volume_mount::VolumeMount;
@@ -19,7 +20,7 @@ mod host_tools;
 mod mount;
 mod nix_helpers;
 mod path_ext;
-mod unshare;
+pub mod unshare;
 mod volume_mount;
 
 #[derive(Parser, Debug)]
@@ -59,12 +60,12 @@ struct RunArgs {
     env: Vec<EnvVariable>,
 
     /// Set the uid of the user running the container.
-    #[arg(long = "set-uid", value_name = "UID")]
-    set_uid: Option<u32>,
+    // #[arg(long = "set-uid", value_name = "UID")]
+    // set_uid: Option<u32>,
 
     /// Set the gid of the user running the container.
-    #[arg(long = "set-gid", value_name = "GID")]
-    set_gid: Option<u32>,
+    // #[arg(long = "set-gid", value_name = "GID")]
+    // set_gid: Option<u32>,
 
     /// Volumes to mount into the container.
     #[arg(short = 'v', long = "volume", value_name = "HOST_PATH:CONTAINER_PATH")]
@@ -100,11 +101,7 @@ fn enter_root_ns() -> Result<()> {
         .namespace(UnshareNamespaces::User)
         .namespace(UnshareNamespaces::Mount)
         .map_current_user_to_root();
-    if let Some(mut child) = builder.enter()? {
-        warn!("Entering root namespace created a child when it shouldn’t.");
-        std::process::exit(child.wait()?);
-    }
-
+    builder.enter()?;
     Ok(())
 }
 
@@ -154,14 +151,15 @@ fn containix_run(args: RunArgs) -> Result<()> {
         container_builder = container_builder.command(cmd);
     };
 
-    if let Some(uid) = args.set_uid {
-        container_builder = container_builder.uid(uid);
-    }
-    if let Some(gid) = args.set_gid {
-        container_builder = container_builder.gid(gid);
-    }
+    // if let Some(uid) = args.set_uid {
+    //     container_builder = container_builder.uid(uid);
+    // }
+    // if let Some(gid) = args.set_gid {
+    //     container_builder = container_builder.gid(gid);
+    // }
 
     let mut container_handle = container_builder.spawn().context("Spawning container")?;
+    trace!("Container started with PID {}", container_handle.pid());
 
     container_handle
         .wait()

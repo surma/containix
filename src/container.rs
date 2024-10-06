@@ -1,22 +1,25 @@
 use anyhow::{Context, Result};
 use derive_builder::Builder;
+use derive_more::derive::{Deref, DerefMut};
 use nix::unistd::{Gid, Pid, Uid};
-use tracing::{error, instrument, warn, Level};
+use tracing::{error, info, instrument, trace, warn, Level};
 
 use std::{
     ffi::{CString, OsStr},
     ops::Deref,
+    os::unix::process::CommandExt,
     path::{Path, PathBuf},
-    process::Child,
+    process::{Child, Command},
 };
 
 use crate::{
     cli_wrappers::slirp::Slirp,
+    command::ChildProcess,
     env::EnvVariable,
     host_tools::get_host_tools,
     mount::{BindMount, MountGuard},
     path_ext::PathExt,
-    unshare::{UnshareChild, UnshareEnvironmentBuilder, UnshareNamespaces},
+    unshare::{UnshareEnvironmentBuilder, UnshareNamespaces},
     volume_mount::VolumeMount,
 };
 
@@ -138,10 +141,10 @@ impl AsRef<Path> for ContainerFsGuard {
 #[builder(build_fn(name = __build, vis = ""))]
 pub struct Container {
     root: ContainerFsGuard,
-    #[builder(default, setter(strip_option, into))]
-    uid: Option<u32>,
-    #[builder(default, setter(strip_option, into))]
-    gid: Option<u32>,
+    // #[builder(default, setter(strip_option, into))]
+    // uid: Option<u32>,
+    // #[builder(default, setter(strip_option, into))]
+    // gid: Option<u32>,
     #[builder(default, setter(custom, name = "env"))]
     envs: Vec<EnvVariable>,
     #[builder(setter(into))]
@@ -178,7 +181,7 @@ impl ContainerBuilder {
     }
 
     #[instrument(level = "trace", skip_all, err(level = Level::TRACE))]
-    pub fn spawn<'a>(self) -> Result<ContainerGuard> {
+    pub fn spawn<'a>(self) -> Result<ContainerGuard<impl ChildProcess, impl ChildProcess>> {
         let opts = self.__build()?;
         let mut unshare_builder = UnshareEnvironmentBuilder::default();
         unshare_builder
@@ -189,78 +192,53 @@ impl ContainerBuilder {
             .namespace(UnshareNamespaces::Uts)
             .namespace(UnshareNamespaces::Network)
             .map_current_user_to_root()
-            .root(opts.root.as_ref())
-            .fork(true);
+            .root(opts.root.as_ref());
 
-        let env_vars = opts
-            .envs
-            .into_iter()
-            .map(|v| Ok(CString::new(v.to_os_string().as_encoded_bytes())?))
-            .collect::<Result<Vec<_>>>()
-            .context("Building env var list")?;
+        let handle = unshare_builder
+            .execute(move || {
+                let mut cmd = Command::new(&opts.command);
+                cmd.args(&opts.args).env_clear().envs(
+                    opts.envs
+                        .iter()
+                        .map(|v| (v.key.as_os_str(), v.value.as_os_str())),
+                );
+                let err = cmd.exec();
+                error!("Failed to exec: {err}");
+                -100
+            })
+            .context("Entering unshare environment")?;
 
-        if let Some(handle) = unshare_builder
-            .enter()
-            .context("Entering unshare environment")?
-        {
-            let slirp = match unsafe { nix::unistd::fork() }? {
-                nix::unistd::ForkResult::Parent { child, .. } => child,
-                nix::unistd::ForkResult::Child => {
-                    let result = Slirp::default()
-                        .binary(get_host_tools().join("bin").join("slirp4netns"))
-                        .pid(u32::try_from(handle.as_raw()).unwrap())
-                        .socket(opts.root.tempdir.path().join("slirp.sock"))
-                        .activate()
-                        .context("Activating slirp")?
-                        .wait()?;
-                    std::process::exit(result.code().unwrap_or(1));
-                }
-            };
+        let slirp = Slirp::default()
+            .binary(get_host_tools().join("bin").join("slirp4netns"))
+            .pid(handle.pid())
+            .socket(opts.root.tempdir.path().join("slirp.sock"))
+            .activate()
+            .context("Activating slirp")?;
 
-            return Ok(ContainerGuard {
-                handle,
-                root: opts.root,
-                slirp,
-            });
-        }
-
-        if let Some(uid) = opts.uid {
-            nix::unistd::setuid(Uid::from_raw(uid))?;
-        }
-        if let Some(gid) = opts.gid {
-            nix::unistd::setgid(Gid::from_raw(gid))?;
-        }
-        nix::unistd::execvpe(
-            CString::new(opts.command.as_bytes())?.as_c_str(),
-            &opts
-                .args
-                .into_iter()
-                .map(|s| Ok(CString::new(s.as_bytes())?))
-                .collect::<Result<Vec<_>>>()?,
-            &env_vars,
-        )?;
-        unreachable!("Execvpe does not return except in case of error, which is handled by `?`")
+        return Ok(ContainerGuard {
+            slirp,
+            handle,
+            root: opts.root,
+        });
     }
 }
 
-#[derive(Debug)]
-pub struct ContainerGuard {
-    handle: UnshareChild,
+#[derive(Debug, Deref, DerefMut)]
+pub struct ContainerGuard<T: ChildProcess, T2: ChildProcess> {
+    slirp: T2,
+    #[deref]
+    #[deref_mut]
+    handle: T,
     root: ContainerFsGuard,
-    slirp: Pid,
 }
 
-impl AsRef<Path> for ContainerGuard {
+impl<T: ChildProcess, T2: ChildProcess> AsRef<Path> for ContainerGuard<T, T2> {
     fn as_ref(&self) -> &Path {
         self.root.as_ref()
     }
 }
 
-impl ContainerGuard {
-    pub fn wait(&mut self) -> Result<i32> {
-        self.handle.wait()
-    }
-
+impl<T: ChildProcess, T2: ChildProcess> ContainerGuard<T, T2> {
     pub fn root(&self) -> &Path {
         self.root.as_ref()
     }

@@ -7,6 +7,9 @@ use std::{
 use anyhow::Result;
 use derive_builder::Builder;
 use serde::Serialize;
+use tracing::{instrument, trace, Level};
+
+use crate::command::ChildProcess;
 
 #[derive(Debug, Builder)]
 #[builder(build_fn(name = finish, vis = ""))]
@@ -18,7 +21,7 @@ pub struct SlirpInvocation {
     pid: u32,
     #[builder(setter(into))]
     socket: PathBuf,
-    #[builder(setter(custom, name = "port"))]
+    #[builder(default = "vec![]", setter(custom, name = "port"))]
     ports: Vec<(u16, u16)>,
     #[builder(default = r#""tap0".into()"#)]
     device_name: String,
@@ -32,7 +35,8 @@ impl Slirp {
         self
     }
 
-    pub fn activate(&mut self) -> Result<Child> {
+    #[instrument(level = "trace", skip_all, err(level = Level::TRACE))]
+    pub fn activate(&mut self) -> Result<impl ChildProcess> {
         let invocation = self.finish()?;
         let mut c = Command::new(invocation.binary);
         c.arg("-c")
@@ -45,6 +49,7 @@ impl Slirp {
             .stderr(Stdio::piped());
 
         let c = c.spawn()?;
+        trace!("Slirp started with PID {}", c.pid());
         for (host_port, guest_port) in invocation.ports {
             expose_port(&invocation.socket, host_port, guest_port)?;
         }
