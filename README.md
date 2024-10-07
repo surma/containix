@@ -1,14 +1,12 @@
 # Containix
 
-Containix is a replacement(-ish) for Docker, using [Nix Flakes] as the container specification.
+Containix is a containerization tool that relies on [Nix] to build the container environment rather than full-blown Linux system file trees.
 
-By running `containix run -f /path/to/flake`, Containix will build the default package of the flake, determine the transitive closure of dependencies, and create a container with a read-only nix store with _only_ those dependencies. If no command is specified, `containix-entry-point` will be run, otherwise the specified command and arguments will be used.
-
-Take a look at the [examples](./examples/) to get started.
+Containix uses [Nix Flakes] as the container specification format. Take a look at the [examples] to get an impression for what that looks like.
 
 ## Installation
 
-You must have nix installed for containix to work. Therefore, you might as well run containix via nix:
+You must have Nix installed for containix to work. Therefore, you can run containix directly via nix:
 
 ```console
 $ nix run github:surma/containix
@@ -19,23 +17,32 @@ $ nix run github:surma/containix
 Run a flake inside a container:
 
 ```console
-$ containix run -f /path/to/flake
+$ containix -f /path/to/flake
 ```
 
-Run MySQL inside a container:
-
-```console
-$ containix run -f 'github:nixos/nixpkgs/24.05#mysql' -- mysql --version
-```
-
-Mount a host directory into the container:
-
-```console
-$ containix run -f /path/to/flake --volume $PWD:/workdir
-```
-
-Since containers are flakes, you can run the examples from this repository as follows:
+Since any flake expression can be used for the container, you can run the examples from this repository:
 
 ```console
 $ containix -f 'github:surma/containix?dir=examples/simple_container'
 ```
+
+Mount a host directory as read-only into the container, set an environment variable, expose a port and bind a webserver to it:
+
+```console
+$ containix -f 'github:surma/containix?dir=examples/webserver' \
+    --volume $PWD:/var/www:ro \
+    --port 8080:8123 \
+    --env PORT=8123
+```
+
+Write your own container flake:
+
+```console
+nix flake init -t github:surma/containix
+# ... edit flake.nix ...
+containix -f .
+```
+
+[Nix]: https://nixos.org/
+[Nix Flakes]: https://nixos.wiki/wiki/Flakes
+[examples]: ./examples/

@@ -1,5 +1,5 @@
 {
-  description = "Simple container printing some info and dropping into a shell";
+  description = "Spawns a web server on port $PORT (default: 8080), serving /var/www";
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/24.05";
     flake-utils.url = "github:numtide/flake-utils";
@@ -20,23 +20,10 @@
       in
       rec {
         packages.default = buildContainerEnv {
-          packages = with pkgs; [
-            bash
-            coreutils
-            util-linux
-            inetutils
-            shadow
-            su
-            iproute2
-          ];
+          packages = with pkgs; [ simple-http-server ];
           entryPoint = ''
-            echo -e "\n# Mounts"
-            mount
-            echo -e "\n# Environment"
-            env
-            echo -e "\n# Network"
-            ip addr
-            exec bash
+            # This looks a bit odd, but we have to prevent nix from interpolating the string.
+            exec simple-http-server --port ${"$"}{PORT:-8080} /var/www 
           '';
         };
       }

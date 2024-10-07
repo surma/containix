@@ -1,5 +1,5 @@
 {
-  description = "Simple container printing some info and dropping into a shell";
+  description = "Basic Containix Container";
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/24.05";
     flake-utils.url = "github:numtide/flake-utils";
@@ -22,20 +22,8 @@
         packages.default = buildContainerEnv {
           packages = with pkgs; [
             bash
-            coreutils
-            util-linux
-            inetutils
-            shadow
-            su
-            iproute2
           ];
           entryPoint = ''
-            echo -e "\n# Mounts"
-            mount
-            echo -e "\n# Environment"
-            env
-            echo -e "\n# Network"
-            ip addr
             exec bash
           '';
         };
