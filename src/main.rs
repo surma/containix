@@ -76,6 +76,10 @@ struct RunArgs {
         default_value = "github:surma/containix#host-tools"
     )]
     host_tools: String,
+
+    /// Mount the entire Nix store into the container, rather than just the transitive closure.
+    #[arg(long = "full-nix-store")]
+    full_nix_store: bool,
 }
 
 #[instrument(level = "trace", skip_all, err(level = Level::TRACE))]
@@ -117,8 +121,12 @@ fn containix_run(args: RunArgs) -> Result<()> {
     );
 
     let mut container_fs = ContainerFsBuilder::default();
-    for component in &closure {
-        container_fs.nix_component(component.path());
+    if args.full_nix_store {
+        container_fs.volume(VolumeMount::read_only("/nix/store", "/nix/store"));
+    } else {
+        for component in &closure {
+            container_fs.nix_component(component.path());
+        }
     }
 
     for volume in &args.volumes {

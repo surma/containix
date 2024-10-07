@@ -1,4 +1,7 @@
-use std::{path::PathBuf, str::FromStr};
+use std::{
+    path::{Path, PathBuf},
+    str::FromStr,
+};
 
 use anyhow::Result;
 
@@ -7,6 +10,16 @@ pub struct VolumeMount {
     pub host_path: PathBuf,
     pub container_path: PathBuf,
     pub read_only: bool,
+}
+
+impl VolumeMount {
+    pub fn read_only(host_path: impl AsRef<Path>, container_path: impl AsRef<Path>) -> Self {
+        Self {
+            host_path: host_path.as_ref().to_path_buf(),
+            container_path: container_path.as_ref().to_path_buf(),
+            read_only: true,
+        }
+    }
 }
 
 impl FromStr for VolumeMount {
