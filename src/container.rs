@@ -211,10 +211,11 @@ impl ContainerBuilder {
                         .map(|v| (v.key.as_os_str(), v.value.as_os_str())),
                 );
                 let err = cmd.exec();
-                error!("Failed to exec: {err}");
+                error!("Failed to execute `{:?}`: {err}", cmd);
                 -100
             })
             .context("Entering unshare environment")?;
+        trace!("Container spawned with PID {}", handle.pid());
 
         let mut slirp = Slirp::default();
         slirp

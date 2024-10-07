@@ -1,7 +1,7 @@
 use std::mem::ManuallyDrop;
 
 use anyhow::{Context, Result};
-use clap::{Parser, Subcommand};
+use clap::Parser;
 use containix::command::ChildProcess;
 use containix::container::{ContainerBuilder, ContainerFsBuilder};
 use containix::env::EnvVariable;
@@ -16,34 +16,13 @@ use tracing_subscriber::{fmt, fmt::format::FmtSpan, EnvFilter};
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Cli {
-    #[command(subcommand)]
-    command: Commands,
-}
-
-#[derive(Subcommand, Debug)]
-enum Commands {
-    /// Build a Nix flake container
-    Build(BuildArgs),
-    /// Run a Nix flake container
-    Run(RunArgs),
-}
-
-#[derive(Parser, Debug)]
-struct BuildArgs {
-    /// Nix flake container
-    #[arg(short = 'f', long = "flake", value_name = "NIX FILE")]
-    flake: ContainixFlake,
-}
-
-#[derive(Parser, Debug)]
-pub struct RunArgs {
     /// Nix flake container
     #[arg(short = 'f', long = "flake", value_name = "NIX FLAKE")]
     flake: ContainixFlake,
 
-    /// Arguments to pass to the command.
+    /// Command to invoke in the container
     #[arg(trailing_var_arg = true)]
-    args: Vec<String>,
+    invocation: Vec<String>,
 
     /// Environment variables to set in the container.
     #[arg(short = 'e', long = "env", value_name = "KEY=VALUE")]
@@ -87,16 +66,6 @@ pub struct RunArgs {
 }
 
 #[instrument(level = "trace", skip_all, err(level = Level::TRACE))]
-fn containix_build(args: BuildArgs) -> Result<()> {
-    let store_item = args.flake.build(|_| {})?;
-    info!(
-        "Container built successfully: {}",
-        store_item.path().display()
-    );
-    Ok(())
-}
-
-#[instrument(level = "trace", skip_all, err(level = Level::TRACE))]
 fn enter_root_ns() -> Result<()> {
     let mut builder = UnshareEnvironmentBuilder::default();
     builder
@@ -108,7 +77,7 @@ fn enter_root_ns() -> Result<()> {
 }
 
 #[instrument(level = "trace", skip_all, err(level = Level::TRACE))]
-fn containix_run(args: RunArgs) -> Result<()> {
+fn containix_run(args: Cli) -> Result<()> {
     setup_host_tools(&args.host_tools, args.refresh)?;
     info!("Building container {}", args.flake);
     let store_item = args
@@ -153,7 +122,7 @@ fn containix_run(args: RunArgs) -> Result<()> {
         .env("PATH", store_item.path().join("bin"))
         .envs(args.env);
 
-    if let &[cmd, ref args @ ..] = &args.args.as_slice() {
+    if let &[cmd, ref args @ ..] = &args.invocation.as_slice() {
         container_builder = container_builder.command(cmd).args(args);
     } else {
         let cmd = store_item.path().join("bin").join("containix-entry-point");
@@ -200,9 +169,5 @@ fn main() -> Result<()> {
         .init();
 
     let cli = Cli::parse();
-
-    match cli.command {
-        Commands::Build(args) => containix_build(args),
-        Commands::Run(args) => containix_run(args),
-    }
+    containix_run(cli)
 }

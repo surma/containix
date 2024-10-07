@@ -6,10 +6,10 @@ use std::{
     process::{Command, Stdio},
 };
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use derive_builder::Builder;
 use serde::Serialize;
-use tracing::{instrument, trace, Level};
+use tracing::{error, instrument, trace, Level};
 
 use crate::{command::ChildProcess, ports::PortMapping};
 
@@ -53,16 +53,14 @@ impl Slirp {
             .stderr(Stdio::piped());
 
         let c = c.spawn().context("Spawning slirp")?;
-        let mut rx: File = rx.into();
-        let mut buf = [0; 1];
-        trace!("Waiting for slirp to be ready");
-        while let Ok(0) = rx.read(&mut buf) {}
-
-        trace!("Slirp fully initialized with PID {}", c.pid());
-        for port in invocation.ports {
-            expose_port(&invocation.socket, port.host_port, port.container_port)
-                .context("Exposing ports")?;
-        }
+        trace!("Slirp spawned with PID {}", c.pid());
+        std::thread::spawn(move || {
+            if let Err(e) =
+                intialize_with_ports(File::from(rx), invocation.socket, &invocation.ports)
+            {
+                error!("Error initializing slirp: {e}");
+            }
+        });
         Ok(c)
     }
 }
@@ -80,7 +78,7 @@ struct SlirpExposePortCommand {
     guest_addr: String,
     guest_port: u16,
 }
-pub fn expose_port(socket: impl AsRef<Path>, host_port: u16, guest_port: u16) -> Result<()> {
+fn expose_port(socket: impl AsRef<Path>, host_port: u16, guest_port: u16) -> Result<()> {
     let mut stream = UnixStream::connect(socket.as_ref()).context("Connecting to slirp socket")?;
     let command = SlirpCommand {
         execute: "add_hostfwd".to_string(),
@@ -97,5 +95,23 @@ pub fn expose_port(socket: impl AsRef<Path>, host_port: u16, guest_port: u16) ->
     stream
         .write_all(cmd.as_bytes())
         .context("Sending slirp command")?;
+    Ok(())
+}
+
+fn wait_for_slirp_ready(mut signal: impl Read) -> Result<()> {
+    let mut buf = [0; 1];
+    while let Ok(0) = signal.read(&mut buf) {}
+    Ok(())
+}
+
+fn intialize_with_ports<'a>(
+    signal: impl Read,
+    socket: impl AsRef<Path>,
+    ports: impl IntoIterator<Item = &'a PortMapping>,
+) -> Result<()> {
+    wait_for_slirp_ready(signal).context("Waiting for slirp to initialize")?;
+    for port in ports.into_iter() {
+        expose_port(&socket, port.host_port, port.container_port).context("Exposing ports")?;
+    }
     Ok(())
 }
