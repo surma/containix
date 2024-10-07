@@ -1,6 +1,6 @@
 use std::mem::ManuallyDrop;
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use clap::Parser;
 use containix::command::ChildProcess;
 use containix::container::{ContainerBuilder, ContainerFsBuilder};
@@ -20,9 +20,9 @@ struct Cli {
     #[arg(short = 'f', long = "flake", value_name = "NIX FLAKE")]
     flake: ContainixFlake,
 
-    /// Command to invoke in the container
+    /// Arguments to pass to the container entry point.
     #[arg(trailing_var_arg = true)]
-    invocation: Vec<String>,
+    args: Vec<String>,
 
     /// Environment variables to set in the container.
     #[arg(short = 'e', long = "env", value_name = "KEY=VALUE")]
@@ -122,15 +122,11 @@ fn containix_run(args: Cli) -> Result<()> {
         .env("PATH", store_item.path().join("bin"))
         .envs(args.env);
 
-    if let &[cmd, ref args @ ..] = &args.invocation.as_slice() {
-        container_builder = container_builder.command(cmd).args(args);
-    } else {
-        let cmd = store_item.path().join("bin").join("containix-entry-point");
-        let Some(cmd) = cmd.to_str() else {
-            anyhow::bail!("Container flake name contains invalid utf-8");
-        };
-        container_builder = container_builder.command(cmd);
+    let cmd = store_item.path().join("bin").join("containix-entry-point");
+    let Some(cmd) = cmd.to_str() else {
+        bail!("Container flake name contains invalid utf-8");
     };
+    container_builder = container_builder.command(cmd).args(args.args);
 
     // if let Some(uid) = args.set_uid {
     //     container_builder = container_builder.uid(uid);

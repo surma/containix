@@ -20,9 +20,7 @@
       in
       rec {
         packages.default = buildContainerEnv {
-          packages = with pkgs; [
-            bash
-          ];
+          packages = with pkgs; [ bash ];
           entryPoint = ''
             exec bash
           '';

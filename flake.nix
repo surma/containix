@@ -26,13 +26,12 @@
       );
 
       templates = rec {
-          default = basic;
-          basic = {
-            description = "Basic Containix container with just bash";
-            path = ./templates/basic;
-          };
+        default = basic;
+        basic = {
+          description = "Basic Containix container with just bash";
+          path = ./templates/basic;
         };
-
+      };
     in
     (eachSystem linuxSystems (
       system:
@@ -61,8 +60,10 @@
           };
         };
 
-        
         lib = callPackage (import ./lib.nix) { };
       }
-    )) // {inherit templates;};
+    ))
+    // {
+      inherit templates;
+    };
 }
