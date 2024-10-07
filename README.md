@@ -1,8 +1,8 @@
 # Containix
 
-Containix is a containerization tool that relies on [Nix] to build the container environment rather than full-blown Linux system file trees.
+Containix is a containerization tool that relies on [Nix] to define and build the container environment rather than using images of Linux system file trees like [Docker] does.
 
-Containix uses [Nix Flakes] as the container specification format. Take a look at the [examples] to get an impression for what that looks like.
+Containix uses [Nix Flakes] as the container definition format. Take a look at the [examples] to get an impression for what that looks like.
 
 ## Installation
 
@@ -20,13 +20,15 @@ Run a flake inside a container:
 $ containix -f /path/to/flake
 ```
 
+This will build the flake’s `containix` package if it exists, otherwise it will use the `default` package.
+
 Since any flake expression can be used for the container, you can run the examples from this repository:
 
 ```console
 $ containix -f 'github:surma/containix?dir=examples/simple_container'
 ```
 
-Mount a host directory as read-only into the container, set an environment variable, expose a port and bind a webserver to it:
+Many of the familiar flags from [Docker] are supported: `-v` mounts a host directory into the container, `-e` set an environment variable and `-e` expose a port:
 
 ```console
 $ containix -f 'github:surma/containix?dir=examples/webserver' \
@@ -46,3 +48,8 @@ containix -f .
 [Nix]: https://nixos.org/
 [Nix Flakes]: https://nixos.wiki/wiki/Flakes
 [examples]: ./examples/
+[Docker]: https://www.docker.com/
+
+---
+
+Apache License 2.0
