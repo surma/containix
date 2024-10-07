@@ -1,16 +1,15 @@
 use crate::{ports::PortMapping, tempdir::TempDir};
 use anyhow::{Context, Result};
 use derive_builder::Builder;
-use derive_more::derive::{Deref, DerefMut, From, Into};
-use nix::unistd::{Gid, Pid, Uid};
-use tracing::{error, info, instrument, trace, warn, Level};
+use derive_more::derive::{Deref, DerefMut};
+use tracing::{error, instrument, trace, warn, Level};
 
 use std::{
-    ffi::{CString, OsStr},
+    ffi::OsStr,
     ops::Deref,
     os::unix::process::CommandExt,
     path::{Path, PathBuf},
-    process::{Child, Command},
+    process::Command,
 };
 
 use crate::{

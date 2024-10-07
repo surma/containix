@@ -1,6 +1,6 @@
 use std::{
     path::{Path, PathBuf},
-    sync::{LazyLock, OnceLock},
+    sync::OnceLock,
 };
 
 use anyhow::{bail, Result};

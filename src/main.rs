@@ -1,4 +1,4 @@
-use std::{mem::ManuallyDrop, path::PathBuf};
+use std::mem::ManuallyDrop;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};

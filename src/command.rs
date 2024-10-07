@@ -1,5 +1,5 @@
 use std::{
-    ffi::{CStr, CString, OsStr},
+    ffi::OsStr,
     path::PathBuf,
     process::{Command, Output},
 };
@@ -93,6 +93,6 @@ impl ChildProcess for std::process::Child {
     }
 
     fn pid(&self) -> u32 {
-        self.id() as u32
+        self.id()
     }
 }

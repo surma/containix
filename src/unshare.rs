@@ -6,8 +6,8 @@ use std::{
 use anyhow::{Context, Result};
 use derive_builder::Builder;
 use derive_more::derive::{Deref, DerefMut};
-use nix::{sched::CloneFlags, unistd::Pid};
-use tracing::{error, info, instrument, trace, Level};
+use nix::sched::CloneFlags;
+use tracing::{error, instrument, Level};
 
 use crate::command::{ChildProcess, NixUnistdChild};
 

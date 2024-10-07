@@ -20,10 +20,10 @@ impl TempDir {
         let mut name = String::new();
         if let Some(prefix) = prefix {
             name.push_str(prefix.as_ref());
-            name.push_str("-");
+            name.push('-');
         }
         name.push_str(suffix.as_ref());
-        let path = PathBuf::from(std::env::temp_dir()).join(name);
+        let path = std::env::temp_dir().join(name);
         Ok(Self(path))
     }
 

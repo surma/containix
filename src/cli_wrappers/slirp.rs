@@ -3,7 +3,7 @@ use std::{
     io::{Read, Write},
     os::{fd::AsRawFd, unix::net::UnixStream},
     path::{Path, PathBuf},
-    process::{Child, Command, Stdio},
+    process::{Command, Stdio},
 };
 
 use anyhow::{Context, Result};

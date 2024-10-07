@@ -2,14 +2,12 @@ use std::{
     ffi::{CStr, CString},
     fs::File,
     io::{Read, Write},
-    process::{Command, Stdio},
 };
 
 use containix::{
     command::ChildProcess,
     unshare::{UnshareEnvironmentBuilder, UnshareNamespaces},
 };
-use nix::{sys::wait::WaitPidFlag, unistd::Pid};
 use tracing::{info, Level};
 
 #[tracing::instrument(skip_all)]
