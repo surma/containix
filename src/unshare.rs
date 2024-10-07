@@ -6,7 +6,10 @@ use std::{
 use anyhow::{Context, Result};
 use derive_builder::Builder;
 use derive_more::derive::{Deref, DerefMut};
-use tracing::{instrument, Level};
+use nix::sched::CloneFlags;
+use tracing::{error, instrument, Level};
+
+use crate::command::{ChildProcess, NixUnistdChild};
 
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
@@ -78,20 +81,6 @@ impl IdRanges {
     }
 }
 
-#[derive(Debug, Deref)]
-pub struct UnshareChild(nix::unistd::Pid);
-
-impl UnshareChild {
-    pub fn wait(&mut self) -> Result<i32> {
-        match nix::sys::wait::waitpid(self.0, None)? {
-            nix::sys::wait::WaitStatus::Exited(_, status) => Ok(status),
-            r => Err(anyhow::anyhow!(
-                "Child process did not exit normally: {r:?}"
-            )),
-        }
-    }
-}
-
 #[derive(Debug, Builder)]
 #[builder(build_fn(name = "build", vis = ""))]
 pub struct UnshareEnvironment {
@@ -101,10 +90,25 @@ pub struct UnshareEnvironment {
     uid_maps: IdRanges,
     #[builder(default, setter(custom, name = "gid_map"))]
     gid_maps: IdRanges,
-    #[builder(default)]
-    fork: bool,
     #[builder(default, setter(strip_option, into))]
     root: Option<PathBuf>,
+}
+
+impl UnshareEnvironment {
+    pub fn clone_flags(&self) -> CloneFlags {
+        self.namespaces
+            .iter()
+            .fold(nix::sched::CloneFlags::empty(), |flags, namespace| {
+                flags.union((*namespace).into())
+            })
+    }
+
+    pub fn write_id_maps(&self) -> Result<()> {
+        std::fs::write("/proc/self/setgroups", "deny").context("Disallowing setgroups")?;
+        write_mappings("/proc/self/uid_map", &self.uid_maps).context("Writing uid map")?;
+        write_mappings("/proc/self/gid_map", &self.gid_maps).context("Writing gid map")?;
+        Ok(())
+    }
 }
 
 #[allow(dead_code)]
@@ -142,40 +146,68 @@ impl UnshareEnvironmentBuilder {
     }
 
     #[instrument(level = "trace", skip_all, err(level = Level::TRACE))]
-    pub fn enter(self) -> Result<Option<UnshareChild>> {
-        let unshare = self.build().context("Building unshare options")?;
-        // if !unshare.uid_map.is_empty() || !unshare.gid_map.is_empty() {
-        //     std::fs::write("/proc/self/setgroups", "deny").context("Disallowing setgroups")?;
-        //     write_mappings("/proc/self/uid_map", &unshare.uid_map).context("Writing uid map")?;
-        //     write_mappings("/proc/self/gid_map", &unshare.gid_map).context("Writing gid map")?;
+    fn pre_enter_setup(&self, unshare: &UnshareEnvironment) -> Result<()> {
+        // if !unshare.uid_maps.is_empty() {
+        //     write_mappings("/proc/self/uid_map", &unshare.uid_maps).context("Writing uid map")?;
         // }
+        // if !unshare.gid_maps.is_empty() {
+        //     std::fs::write("/proc/self/setgroups", "deny").context("Disallowing setgroups")?;
+        //     write_mappings("/proc/self/gid_map", &unshare.gid_maps).context("Writing gid map")?;
+        // }
+        Ok(())
+    }
 
-        let clone_flags = unshare
-            .namespaces
-            .into_iter()
-            .fold(nix::sched::CloneFlags::empty(), |flags, namespace| {
-                flags.union(namespace.into())
-            });
-        nix::sched::unshare(clone_flags).context("Entering new namespace")?;
+    #[instrument(level = "trace", skip_all, err(level = Level::TRACE))]
+    pub fn enter(&mut self) -> Result<()> {
+        let unshare = self.build().context("Building unshare options")?;
 
+        self.pre_enter_setup(&unshare)?;
+        nix::sched::unshare(unshare.clone_flags()).context("Entering new namespace")?;
+        self.post_enter_setup(&unshare)?;
+        Ok(())
+    }
+
+    #[instrument(level = "trace", skip_all, err(level = Level::TRACE))]
+    fn post_enter_setup(&self, unshare: &UnshareEnvironment) -> Result<()> {
         if !unshare.uid_maps.is_empty() || !unshare.gid_maps.is_empty() {
-            std::fs::write("/proc/self/setgroups", "deny").context("Disallowing setgroups")?;
-            write_mappings("/proc/self/uid_map", &unshare.uid_maps).context("Writing uid map")?;
-            write_mappings("/proc/self/gid_map", &unshare.gid_maps).context("Writing gid map")?;
+            unshare.write_id_maps().context("Writing id maps")?;
         }
 
-        if unshare.fork {
-            if let nix::unistd::ForkResult::Parent { child } = unsafe { nix::unistd::fork() }? {
-                return Ok(Some(UnshareChild(child)));
-            }
-        }
-
-        if let Some(root) = unshare.root {
-            nix::unistd::chroot(&root)
+        if let Some(root) = &unshare.root {
+            nix::unistd::chroot(root)
                 .with_context(|| format!("Chrooting to {}", root.display()))?;
             nix::unistd::chdir("/").with_context(|| "Changing directory to /".to_string())?;
         }
-        Ok(None)
+        Ok(())
+    }
+
+    #[instrument(level = "trace", skip_all, err(level = Level::TRACE))]
+    pub fn execute(&mut self, mut f: impl FnMut() -> isize) -> Result<impl ChildProcess> {
+        let unshare = self.build().context("Building unshare options")?;
+
+        self.pre_enter_setup(&unshare)?;
+        let mut stack = vec![0u8; 1024 * 1024];
+        let clone_flags = unshare.clone_flags();
+        let pid = unsafe {
+            nix::sched::clone(
+                Box::new(move || {
+                    if let Err(e) = self.post_enter_setup(&unshare) {
+                        error!("Post-enter setup failed: {e}");
+                        return -1000;
+                    }
+                    f().try_into().unwrap()
+                }),
+                stack.as_mut_slice(),
+                clone_flags,
+                None,
+            )
+            .context("Entering new namespace")?
+        };
+
+        // Wait for 100ms to make sure any subsequent wait() calls succeed.
+        // Not sure why this is necessary.
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        Ok(NixUnistdChild::from(pid))
     }
 }
 

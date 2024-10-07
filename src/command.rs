@@ -5,6 +5,7 @@ use std::{
 };
 
 use anyhow::Result;
+use derive_more::derive::Deref;
 use tracing::{error, instrument, trace};
 
 pub fn resolve_command(command: impl AsRef<OsStr>) -> PathBuf {
@@ -46,4 +47,52 @@ pub fn run_command(command: Command) -> Result<Output> {
         anyhow::bail!("Command {command:?} failed");
     }
     Ok(output)
+}
+
+pub trait ChildProcess {
+    fn wait(&mut self) -> Result<Option<i32>>;
+    fn kill(&mut self) -> Result<()>;
+    fn pid(&self) -> u32;
+}
+
+#[derive(Debug, Deref)]
+pub struct NixUnistdChild(nix::unistd::Pid);
+
+impl ChildProcess for NixUnistdChild {
+    fn wait(&mut self) -> Result<Option<i32>> {
+        match nix::sys::wait::waitpid(self.0, None)? {
+            nix::sys::wait::WaitStatus::Exited(_, status) => Ok(Some(status)),
+            _ => Ok(None),
+        }
+    }
+
+    fn kill(&mut self) -> Result<()> {
+        _ = nix::sys::signal::kill(self.0, nix::sys::signal::Signal::SIGTERM);
+        Ok(())
+    }
+
+    fn pid(&self) -> u32 {
+        self.0.as_raw().try_into().unwrap()
+    }
+}
+
+impl From<nix::unistd::Pid> for NixUnistdChild {
+    fn from(pid: nix::unistd::Pid) -> Self {
+        Self(pid)
+    }
+}
+
+impl ChildProcess for std::process::Child {
+    fn wait(&mut self) -> Result<Option<i32>> {
+        Ok(self.wait()?.code())
+    }
+
+    fn kill(&mut self) -> Result<()> {
+        self.kill()?;
+        Ok(())
+    }
+
+    fn pid(&self) -> u32 {
+        self.id()
+    }
 }

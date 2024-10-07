@@ -199,7 +199,11 @@ impl NixFlake {
         F: FnOnce(&mut NixBuild),
     {
         let mut nix_cmd = NixBuild::default();
-        nix_cmd.arg("build").arg(self.to_string()).json(true);
+        nix_cmd
+            .arg("build")
+            .arg(self.to_string())
+            .json(true)
+            .symlink(FlakeOutputSymlink::None);
         f(&mut nix_cmd);
         let mut output: Vec<NixFlakeBuildOutput> = nix_cmd.run()?;
 

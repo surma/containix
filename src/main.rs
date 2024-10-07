@@ -2,23 +2,16 @@ use std::mem::ManuallyDrop;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use container::{ContainerBuilder, ContainerFsBuilder};
-use env::EnvVariable;
-use nix_helpers::ContainixFlake;
-use tracing::{debug, info, instrument, warn, Level};
+use containix::command::ChildProcess;
+use containix::container::{ContainerBuilder, ContainerFsBuilder};
+use containix::env::EnvVariable;
+use containix::host_tools::setup_host_tools;
+use containix::nix_helpers::ContainixFlake;
+use containix::ports::PortMapping;
+use containix::unshare::{UnshareEnvironmentBuilder, UnshareNamespaces};
+use containix::volume_mount::VolumeMount;
+use tracing::{debug, info, instrument, trace, warn, Level};
 use tracing_subscriber::{fmt, fmt::format::FmtSpan, EnvFilter};
-use unshare::{UnshareEnvironmentBuilder, UnshareNamespaces};
-use volume_mount::VolumeMount;
-
-mod cli_wrappers;
-mod command;
-mod container;
-mod env;
-mod mount;
-mod nix_helpers;
-mod path_ext;
-mod unshare;
-mod volume_mount;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -57,20 +50,32 @@ struct RunArgs {
     env: Vec<EnvVariable>,
 
     /// Set the uid of the user running the container.
-    #[arg(long = "set-uid", value_name = "UID")]
-    set_uid: Option<u32>,
+    // #[arg(long = "set-uid", value_name = "UID")]
+    // set_uid: Option<u32>,
 
     /// Set the gid of the user running the container.
-    #[arg(long = "set-gid", value_name = "GID")]
-    set_gid: Option<u32>,
+    // #[arg(long = "set-gid", value_name = "GID")]
+    // set_gid: Option<u32>,
 
     /// Volumes to mount into the container.
     #[arg(short = 'v', long = "volume", value_name = "HOST_PATH:CONTAINER_PATH")]
     volumes: Vec<VolumeMount>,
 
+    /// Ports to expose to the host.
+    #[arg(short = 'p', long = "port", value_name = "HOST_PORT:CONTAINER_PORT")]
+    ports: Vec<PortMapping>,
+
     /// Keep the container root directory after the command has run.
     #[arg(short = 'k', long = "keep")]
     keep_container: bool,
+
+    /// Path to host tools.
+    #[arg(
+        long = "host-tools",
+        value_name = "PATH or FLAKE",
+        default_value = "github:surma/containix#host-tools"
+    )]
+    host_tools: String,
 }
 
 #[instrument(level = "trace", skip_all, err(level = Level::TRACE))]
@@ -90,16 +95,13 @@ fn enter_root_ns() -> Result<()> {
         .namespace(UnshareNamespaces::User)
         .namespace(UnshareNamespaces::Mount)
         .map_current_user_to_root();
-    if let Some(mut child) = builder.enter()? {
-        warn!("Entering root namespace created a child when it shouldn’t.");
-        std::process::exit(child.wait()?);
-    }
-
+    builder.enter()?;
     Ok(())
 }
 
 #[instrument(level = "trace", skip_all, err(level = Level::TRACE))]
 fn containix_run(args: RunArgs) -> Result<()> {
+    setup_host_tools(&args.host_tools)?;
     info!("Building container {}", args.flake);
     let store_item = args.flake.build().context("Building container flake")?;
     let closure = store_item
@@ -130,6 +132,7 @@ fn containix_run(args: RunArgs) -> Result<()> {
 
     let mut container_builder = ContainerBuilder::default()
         .root(container_fs)
+        .ports(args.ports)
         .env("PATH", store_item.path().join("bin"))
         .envs(args.env);
 
@@ -143,14 +146,15 @@ fn containix_run(args: RunArgs) -> Result<()> {
         container_builder = container_builder.command(cmd);
     };
 
-    if let Some(uid) = args.set_uid {
-        container_builder = container_builder.uid(uid);
-    }
-    if let Some(gid) = args.set_gid {
-        container_builder = container_builder.gid(gid);
-    }
+    // if let Some(uid) = args.set_uid {
+    //     container_builder = container_builder.uid(uid);
+    // }
+    // if let Some(gid) = args.set_gid {
+    //     container_builder = container_builder.gid(gid);
+    // }
 
     let mut container_handle = container_builder.spawn().context("Spawning container")?;
+    trace!("Container started with PID {}", container_handle.pid());
 
     container_handle
         .wait()
@@ -167,7 +171,7 @@ fn containix_run(args: RunArgs) -> Result<()> {
 fn main() -> Result<()> {
     fmt()
         .with_span_events(FmtSpan::ENTER | FmtSpan::EXIT)
-        .with_target(false)
+        .with_target(true)
         .with_env_filter(
             EnvFilter::builder()
                 .with_default_directive(Level::INFO.into())

@@ -1,19 +1,25 @@
+use crate::{ports::PortMapping, tempdir::TempDir};
 use anyhow::{Context, Result};
 use derive_builder::Builder;
-use nix::unistd::{Gid, Uid};
-use tracing::{instrument, warn, Level};
+use derive_more::derive::{Deref, DerefMut};
+use tracing::{error, instrument, trace, warn, Level};
 
 use std::{
-    ffi::{CString, OsStr},
+    ffi::OsStr,
     ops::Deref,
+    os::unix::process::CommandExt,
     path::{Path, PathBuf},
+    process::Command,
 };
 
 use crate::{
+    cli_wrappers::slirp::Slirp,
+    command::ChildProcess,
     env::EnvVariable,
+    host_tools::get_host_tools,
     mount::{BindMount, MountGuard},
     path_ext::PathExt,
-    unshare::{UnshareChild, UnshareEnvironmentBuilder, UnshareNamespaces},
+    unshare::{UnshareEnvironmentBuilder, UnshareNamespaces},
     volume_mount::VolumeMount,
 };
 
@@ -26,16 +32,6 @@ pub struct ContainerFs {
     volumes: Vec<VolumeMount>,
     #[builder(default, setter(custom, name = "nix_component"))]
     nix_components: Vec<PathBuf>,
-}
-
-#[allow(dead_code)]
-#[derive(Debug)]
-pub struct ContainerFsGuard {
-    // Order is important here, as drop runs in order of declaration.
-    // https://doc.rust-lang.org/stable/std/ops/trait.Drop.html#drop-order
-    volume_mounts: Vec<MountGuard>,
-    nix_mounts: Vec<MountGuard>,
-    root: tempdir::TempDir,
 }
 
 impl ContainerFsBuilder {
@@ -56,7 +52,10 @@ impl ContainerFsBuilder {
     #[instrument(level = "trace", skip_all, err(level = Level::TRACE))]
     pub fn build(self) -> Result<ContainerFsGuard> {
         let container = self.__build()?;
-        let root = tempdir::TempDir::new("containix-container").context("Creating tempdir")?;
+        let tempdir = TempDir::with_prefix("containix-container").context("Creating tempdir")?;
+        let root = tempdir.join("root");
+        std::fs::create_dir_all(&root)
+            .with_context(|| format!("Creating rootfs at {}", root.display()))?;
 
         if container.rootfs.is_some() {
             warn!("Not sure how rootfs got set, but it isn’t supported yet.");
@@ -66,13 +65,12 @@ impl ContainerFsBuilder {
             .nix_components
             .into_iter()
             .map(|item| {
-                let target = root.path().join(item.rootless());
+                let target = root.join(item.rootless());
                 std::fs::create_dir_all(&target)?;
                 BindMount::default()
                     .src(&item)
                     .dest(&target)
                     .read_only(true)
-                    .cleanup(false)
                     .mount()
                     .with_context(|| format!("Mounting {}", item.display()))
             })
@@ -83,14 +81,13 @@ impl ContainerFsBuilder {
             .into_iter()
             .map(|volume_mount| {
                 let src = volume_mount.host_path.as_path();
-                let dest = root.path().join(volume_mount.container_path.rootless());
+                let dest = root.join(volume_mount.container_path.rootless());
                 std::fs::create_dir_all(&dest)
                     .with_context(|| format!("Creating directory {dest:?} for volume mount"))?;
                 BindMount::default()
                     .src(src)
                     .dest(&dest)
                     .read_only(volume_mount.read_only)
-                    .cleanup(false)
                     .mount()
                     .with_context(|| format!("Mounting {src:?} -> {dest:?}"))
             })
@@ -100,16 +97,28 @@ impl ContainerFsBuilder {
         Ok(ContainerFsGuard {
             volume_mounts,
             nix_mounts,
+            tempdir,
             root,
         })
     }
+}
+
+#[allow(dead_code)]
+#[derive(Debug)]
+pub struct ContainerFsGuard {
+    // Order is important here, as drop runs in order of declaration.
+    // https://doc.rust-lang.org/stable/std/ops/trait.Drop.html#drop-order
+    volume_mounts: Vec<MountGuard>,
+    nix_mounts: Vec<MountGuard>,
+    tempdir: TempDir,
+    root: PathBuf,
 }
 
 impl Deref for ContainerFsGuard {
     type Target = Path;
 
     fn deref(&self) -> &Self::Target {
-        self.root.path()
+        &self.root
     }
 }
 
@@ -122,22 +131,24 @@ impl AsRef<Path> for ContainerFsGuard {
 #[derive(Debug, Builder)]
 #[builder(pattern = "owned")]
 #[builder(build_fn(name = __build, vis = ""))]
-pub struct Container<T: AsRef<Path>> {
-    root: T,
-    #[builder(default, setter(strip_option, into))]
-    uid: Option<u32>,
-    #[builder(default, setter(strip_option, into))]
-    gid: Option<u32>,
+pub struct Container {
+    root: ContainerFsGuard,
+    // #[builder(default, setter(strip_option, into))]
+    // uid: Option<u32>,
+    // #[builder(default, setter(strip_option, into))]
+    // gid: Option<u32>,
     #[builder(default, setter(custom, name = "env"))]
     envs: Vec<EnvVariable>,
     #[builder(setter(into))]
     command: String,
     #[builder(default, setter(custom, name = "arg"))]
     args: Vec<String>,
+    #[builder(default, setter(custom, name = "port"))]
+    port_mappings: Vec<PortMapping>,
 }
 
 #[allow(dead_code)]
-impl<T: AsRef<Path>> ContainerBuilder<T> {
+impl ContainerBuilder {
     pub fn env(self, key: impl AsRef<OsStr>, value: impl AsRef<OsStr>) -> Self {
         self.envs([EnvVariable::new(key, value)])
     }
@@ -163,8 +174,22 @@ impl<T: AsRef<Path>> ContainerBuilder<T> {
         self
     }
 
+    pub fn port(mut self, port_mapping: PortMapping) -> Self {
+        self.port_mappings
+            .get_or_insert_with(std::vec::Vec::new)
+            .push(port_mapping);
+        self
+    }
+
+    pub fn ports(mut self, port_mappings: impl IntoIterator<Item = PortMapping>) -> Self {
+        self.port_mappings
+            .get_or_insert_with(std::vec::Vec::new)
+            .extend(port_mappings);
+        self
+    }
+
     #[instrument(level = "trace", skip_all, err(level = Level::TRACE))]
-    pub fn spawn<'a>(self) -> Result<ContainerGuard<T>> {
+    pub fn spawn<'a>(self) -> Result<ContainerGuard<impl ChildProcess, impl ChildProcess>> {
         let opts = self.__build()?;
         let mut unshare_builder = UnshareEnvironmentBuilder::default();
         unshare_builder
@@ -173,66 +198,75 @@ impl<T: AsRef<Path>> ContainerBuilder<T> {
             .namespace(UnshareNamespaces::Ipc)
             .namespace(UnshareNamespaces::User)
             .namespace(UnshareNamespaces::Uts)
+            .namespace(UnshareNamespaces::Network)
             .map_current_user_to_root()
-            .root(opts.root.as_ref())
-            .fork(true);
+            .root(opts.root.as_ref());
 
-        // .namespace(UnshareNamespaces::Network)
+        let handle = unshare_builder
+            .execute(move || {
+                let mut cmd = Command::new(&opts.command);
+                cmd.args(&opts.args).env_clear().envs(
+                    opts.envs
+                        .iter()
+                        .map(|v| (v.key.as_os_str(), v.value.as_os_str())),
+                );
+                let err = cmd.exec();
+                error!("Failed to exec: {err}");
+                -100
+            })
+            .context("Entering unshare environment")?;
 
-        let env_vars = opts
-            .envs
-            .into_iter()
-            .map(|v| Ok(CString::new(v.to_os_string().as_encoded_bytes())?))
-            .collect::<Result<Vec<_>>>()
-            .context("Building env var list")?;
+        let mut slirp = Slirp::default();
+        slirp
+            .pid(handle.pid())
+            .socket(opts.root.tempdir.join("slirp.sock"));
 
-        if let Some(handle) = unshare_builder
-            .enter()
-            .context("Entering unshare environment")?
-        {
-            return Ok(ContainerGuard {
-                handle,
-                root: opts.root,
-            });
+        let slirp_binary = get_host_tools().join("bin").join("slirp4netns");
+        trace!("Using slirp binary: {}", slirp_binary.display());
+        slirp.binary(slirp_binary);
+
+        for port in opts.port_mappings {
+            slirp.port(port);
         }
 
-        if let Some(uid) = opts.uid {
-            nix::unistd::setuid(Uid::from_raw(uid))?;
-        }
-        if let Some(gid) = opts.gid {
-            nix::unistd::setgid(Gid::from_raw(gid))?;
-        }
-        nix::unistd::execvpe(
-            CString::new(opts.command.as_bytes())?.as_c_str(),
-            &opts
-                .args
-                .into_iter()
-                .map(|s| Ok(CString::new(s.as_bytes())?))
-                .collect::<Result<Vec<_>>>()?,
-            &env_vars,
-        )?;
-        unreachable!("Execvpe does not return except in case of error, which is handled by `?`")
+        let slirp = slirp.activate().context("Activating slirp")?;
+
+        return Ok(ContainerGuard {
+            slirp,
+            handle,
+            root: opts.root,
+        });
     }
 }
 
-#[derive(Debug)]
-pub struct ContainerGuard<T: AsRef<Path>> {
-    handle: UnshareChild,
-    root: T,
+#[derive(Debug, Deref, DerefMut)]
+pub struct ContainerGuard<T: ChildProcess, T2: ChildProcess> {
+    slirp: T2,
+    #[deref]
+    #[deref_mut]
+    handle: T,
+    root: ContainerFsGuard,
 }
 
-impl<T: AsRef<Path>> AsRef<Path> for ContainerGuard<T> {
+impl<T: ChildProcess, T2: ChildProcess> AsRef<Path> for ContainerGuard<T, T2> {
     fn as_ref(&self) -> &Path {
         self.root.as_ref()
     }
 }
 
-impl<T: AsRef<Path>> ContainerGuard<T> {
-    pub fn wait(&mut self) -> Result<i32> {
-        self.handle.wait()
-    }
-
+impl<T: ChildProcess, T2: ChildProcess> ContainerGuard<T, T2> {
     pub fn root(&self) -> &Path {
         self.root.as_ref()
+    }
+}
+
+impl<T: ChildProcess, T2: ChildProcess> Drop for ContainerGuard<T, T2> {
+    fn drop(&mut self) {
+        if let Err(e) = self.handle.kill() {
+            error!("Failed to kill container: {e}");
+        }
+        if let Err(e) = self.slirp.kill() {
+            error!("Failed to kill slirp: {e}");
+        }
     }
 }
