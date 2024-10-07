@@ -114,7 +114,10 @@ impl FromStr for ContainixFlake {
 }
 
 impl ContainixFlake {
-    pub fn build(&self) -> Result<NixStoreItem> {
+    pub fn build<F>(&self, f: F) -> Result<NixStoreItem>
+    where
+        F: FnOnce(&mut NixBuild),
+    {
         static DEFAULT_OUTPUT_NAMES: &[&str] = &["containix", "default"];
 
         let c = if self.output().is_none() {
@@ -147,6 +150,7 @@ impl ContainixFlake {
             nix_cmd
                 .lock_file("containix.lock")
                 .symlink(FlakeOutputSymlink::None);
+            f(nix_cmd);
         })?;
 
         let Some(path) = build.get_bin() else {

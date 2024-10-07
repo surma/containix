@@ -29,6 +29,8 @@ pub struct NixBuildInvocation {
     quiet: bool,
     #[builder(default, setter(into))]
     symlink: FlakeOutputSymlink,
+    #[builder(default)]
+    refresh: bool,
 }
 
 impl NixBuild {
@@ -47,6 +49,10 @@ impl NixBuild {
 
         if invocation.json {
             cmd.arg("--json");
+        }
+
+        if invocation.refresh {
+            cmd.arg("--refresh");
         }
 
         if let Some(lock_file) = &invocation.lock_file {

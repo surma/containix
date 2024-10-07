@@ -11,13 +11,15 @@ use crate::nix_helpers::NixFlake;
 static HOST_TOOLS: OnceLock<PathBuf> = OnceLock::new();
 
 #[instrument(level = "trace", skip_all, err(level = Level::TRACE))]
-pub fn setup_host_tools(host_tools: impl AsRef<str>) -> Result<()> {
+pub fn setup_host_tools(host_tools: impl AsRef<str>, refresh: bool) -> Result<()> {
     let host_tools = host_tools.as_ref();
     let path = if host_tools.starts_with("/nix/store") {
         PathBuf::from(host_tools)
     } else {
         let flake: NixFlake = host_tools.parse()?;
-        let flake_build = flake.build(|_| {})?;
+        let flake_build = flake.build(|args| {
+            args.refresh(refresh);
+        })?;
         let Some(item) = flake_build.get_bin() else {
             bail!("Host tools flake did not build any packages");
         };

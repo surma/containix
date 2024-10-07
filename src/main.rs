@@ -36,7 +36,7 @@ struct BuildArgs {
 }
 
 #[derive(Parser, Debug)]
-struct RunArgs {
+pub struct RunArgs {
     /// Nix flake container
     #[arg(short = 'f', long = "flake", value_name = "NIX FLAKE")]
     flake: ContainixFlake,
@@ -80,11 +80,15 @@ struct RunArgs {
     /// Mount the entire Nix store into the container, rather than just the transitive closure.
     #[arg(long = "full-nix-store")]
     full_nix_store: bool,
+
+    /// (Nix passthru:) Consider all previously downloaded files out-of-date.
+    #[arg(long = "refresh", default_value_t = false)]
+    refresh: bool,
 }
 
 #[instrument(level = "trace", skip_all, err(level = Level::TRACE))]
 fn containix_build(args: BuildArgs) -> Result<()> {
-    let store_item = args.flake.build()?;
+    let store_item = args.flake.build(|_| {})?;
     info!(
         "Container built successfully: {}",
         store_item.path().display()
@@ -105,9 +109,14 @@ fn enter_root_ns() -> Result<()> {
 
 #[instrument(level = "trace", skip_all, err(level = Level::TRACE))]
 fn containix_run(args: RunArgs) -> Result<()> {
-    setup_host_tools(&args.host_tools)?;
+    setup_host_tools(&args.host_tools, args.refresh)?;
     info!("Building container {}", args.flake);
-    let store_item = args.flake.build().context("Building container flake")?;
+    let store_item = args
+        .flake
+        .build(|cmd_args| {
+            cmd_args.refresh(args.refresh);
+        })
+        .context("Building container flake")?;
     let closure = store_item
         .closure()
         .context("Computing transitive closure")?;

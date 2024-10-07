@@ -1,5 +1,6 @@
 {
   writeShellScriptBin,
+  writeTextFile,
   buildEnv,
   pkgs,
   coreutils,
@@ -8,9 +9,20 @@
   lib,
 }:
 let
+resolvConf = writeTextFile {
+        name = "resolve.conf";
+        text = ''
+          nameserver 8.8.8.8
+        '';
+        executable = false;
+        destination = "/etc/resolv.conf";
+      };
   defaultFs = buildEnv {
     name = "container-fs";
-    paths = with pkgs; [ iana-etc ];
+    paths = with pkgs; [ 
+      iana-etc 
+      resolvConf
+    ];
   };
 
   buildContainerEnv =

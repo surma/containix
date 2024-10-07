@@ -43,8 +43,6 @@
             env
             echo -e "\n# Network"
             ip addr
-            echo -e "\n# ls ''${1:-/}"
-            ls -alh ''${1:-/}
             exec simple-http-server --port 8080
           '';
         };
