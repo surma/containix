@@ -1,5 +1,5 @@
+use crate::{ports::PortMapping, tempdir::TempDir};
 use anyhow::{Context, Result};
-use containix::tempdir::TempDir;
 use derive_builder::Builder;
 use derive_more::derive::{Deref, DerefMut, From, Into};
 use nix::unistd::{Gid, Pid, Uid};
@@ -144,6 +144,8 @@ pub struct Container {
     command: String,
     #[builder(default, setter(custom, name = "arg"))]
     args: Vec<String>,
+    #[builder(default, setter(custom, name = "port"))]
+    port_mappings: Vec<PortMapping>,
 }
 
 #[allow(dead_code)]
@@ -170,6 +172,20 @@ impl ContainerBuilder {
         self.args
             .get_or_insert_with(std::vec::Vec::new)
             .extend(args.into_iter().map(|v| v.as_ref().to_string()));
+        self
+    }
+
+    pub fn port(mut self, port_mapping: PortMapping) -> Self {
+        self.port_mappings
+            .get_or_insert_with(std::vec::Vec::new)
+            .push(port_mapping);
+        self
+    }
+
+    pub fn ports(mut self, port_mappings: impl IntoIterator<Item = PortMapping>) -> Self {
+        self.port_mappings
+            .get_or_insert_with(std::vec::Vec::new)
+            .extend(port_mappings);
         self
     }
 
@@ -201,12 +217,20 @@ impl ContainerBuilder {
             })
             .context("Entering unshare environment")?;
 
-        let slirp = Slirp::default()
-            .binary(get_host_tools().join("bin").join("slirp4netns"))
+        let mut slirp = Slirp::default();
+        slirp
             .pid(handle.pid())
-            .socket(opts.root.tempdir.join("slirp.sock"))
-            .activate()
-            .context("Activating slirp")?;
+            .socket(opts.root.tempdir.join("slirp.sock"));
+
+        let slirp_binary = get_host_tools().join("bin").join("slirp4netns");
+        trace!("Using slirp binary: {}", slirp_binary.display());
+        slirp.binary(slirp_binary);
+
+        for port in opts.port_mappings {
+            slirp.port(port);
+        }
+
+        let slirp = slirp.activate().context("Activating slirp")?;
 
         return Ok(ContainerGuard {
             slirp,

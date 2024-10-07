@@ -2,26 +2,16 @@ use std::{mem::ManuallyDrop, path::PathBuf};
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use command::ChildProcess;
-use container::{ContainerBuilder, ContainerFsBuilder};
-use env::EnvVariable;
-use host_tools::setup_host_tools;
-use nix_helpers::ContainixFlake;
+use containix::command::ChildProcess;
+use containix::container::{ContainerBuilder, ContainerFsBuilder};
+use containix::env::EnvVariable;
+use containix::host_tools::setup_host_tools;
+use containix::nix_helpers::ContainixFlake;
+use containix::ports::PortMapping;
+use containix::unshare::{UnshareEnvironmentBuilder, UnshareNamespaces};
+use containix::volume_mount::VolumeMount;
 use tracing::{debug, info, instrument, trace, warn, Level};
 use tracing_subscriber::{fmt, fmt::format::FmtSpan, EnvFilter};
-use unshare::{UnshareEnvironmentBuilder, UnshareNamespaces};
-use volume_mount::VolumeMount;
-
-mod cli_wrappers;
-mod command;
-mod container;
-mod env;
-mod host_tools;
-mod mount;
-mod nix_helpers;
-mod path_ext;
-pub mod unshare;
-mod volume_mount;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -70,6 +60,10 @@ struct RunArgs {
     /// Volumes to mount into the container.
     #[arg(short = 'v', long = "volume", value_name = "HOST_PATH:CONTAINER_PATH")]
     volumes: Vec<VolumeMount>,
+
+    /// Ports to expose to the host.
+    #[arg(short = 'p', long = "port", value_name = "HOST_PORT:CONTAINER_PORT")]
+    ports: Vec<PortMapping>,
 
     /// Keep the container root directory after the command has run.
     #[arg(short = 'k', long = "keep")]
@@ -138,6 +132,7 @@ fn containix_run(args: RunArgs) -> Result<()> {
 
     let mut container_builder = ContainerBuilder::default()
         .root(container_fs)
+        .ports(args.ports)
         .env("PATH", store_item.path().join("bin"))
         .envs(args.env);
 
@@ -176,7 +171,7 @@ fn containix_run(args: RunArgs) -> Result<()> {
 fn main() -> Result<()> {
     fmt()
         .with_span_events(FmtSpan::ENTER | FmtSpan::EXIT)
-        .with_target(false)
+        .with_target(true)
         .with_env_filter(
             EnvFilter::builder()
                 .with_default_directive(Level::INFO.into())

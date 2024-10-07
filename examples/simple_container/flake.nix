@@ -34,6 +34,7 @@
             shadow
             su
             iproute2
+            simple-http-server
           ];
           entryPoint = ''
             echo -e "\n# Mounts"
@@ -44,7 +45,7 @@
             ip addr
             echo -e "\n# ls ''${1:-/}"
             ls -alh ''${1:-/}
-            exec bash
+            exec simple-http-server --port 8080
           '';
         };
       }
