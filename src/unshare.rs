@@ -146,22 +146,9 @@ impl UnshareEnvironmentBuilder {
     }
 
     #[instrument(level = "trace", skip_all, err(level = Level::TRACE))]
-    fn pre_enter_setup(&self, unshare: &UnshareEnvironment) -> Result<()> {
-        // if !unshare.uid_maps.is_empty() {
-        //     write_mappings("/proc/self/uid_map", &unshare.uid_maps).context("Writing uid map")?;
-        // }
-        // if !unshare.gid_maps.is_empty() {
-        //     std::fs::write("/proc/self/setgroups", "deny").context("Disallowing setgroups")?;
-        //     write_mappings("/proc/self/gid_map", &unshare.gid_maps).context("Writing gid map")?;
-        // }
-        Ok(())
-    }
-
-    #[instrument(level = "trace", skip_all, err(level = Level::TRACE))]
     pub fn enter(&mut self) -> Result<()> {
         let unshare = self.build().context("Building unshare options")?;
 
-        self.pre_enter_setup(&unshare)?;
         nix::sched::unshare(unshare.clone_flags()).context("Entering new namespace")?;
         self.post_enter_setup(&unshare)?;
         Ok(())
@@ -185,7 +172,6 @@ impl UnshareEnvironmentBuilder {
     pub fn execute(&mut self, mut f: impl FnMut() -> isize) -> Result<impl ChildProcess> {
         let unshare = self.build().context("Building unshare options")?;
 
-        self.pre_enter_setup(&unshare)?;
         let mut stack = vec![0u8; 1024 * 1024];
         let clone_flags = unshare.clone_flags();
         let pid = unsafe {
@@ -195,7 +181,7 @@ impl UnshareEnvironmentBuilder {
                         error!("Post-enter setup failed: {e}");
                         return -1000;
                     }
-                    f().try_into().unwrap()
+                    f()
                 }),
                 stack.as_mut_slice(),
                 clone_flags,

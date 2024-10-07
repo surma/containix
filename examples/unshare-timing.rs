@@ -42,7 +42,7 @@ fn main() {
         .execute(move || {
             print_info("In new PID NS");
             if let Some(mut gs) = tx.take() {
-                gs.write(&[0]).unwrap();
+                _ = gs.write(&[0]).unwrap();
                 drop(gs);
             }
             nix::unistd::execv(

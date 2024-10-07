@@ -6,7 +6,7 @@ use std::{
     process::{Command, Stdio},
 };
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use derive_builder::Builder;
 use serde::Serialize;
 use tracing::{error, instrument, trace, Level};
